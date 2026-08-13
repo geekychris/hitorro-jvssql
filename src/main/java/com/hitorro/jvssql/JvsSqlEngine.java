@@ -1,0 +1,270 @@
+/*
+ * Copyright (c) 2006-2025 Chris Collins
+ */
+package com.hitorro.jvssql;
+
+import com.hitorro.jsontypesystem.JVS;
+import com.hitorro.jsontypesystem.Type;
+import com.hitorro.jvssql.config.EngineConfig;
+import com.hitorro.jvssql.config.RefreshPolicy;
+import com.hitorro.jvssql.config.StreamConfig;
+import com.hitorro.jvssql.schema.JvsSchema;
+import com.hitorro.jvssql.schema.JvsTable;
+import com.hitorro.util.basefile.fs.BaseFile;
+import com.hitorro.util.core.iterator.sinks.Sink;
+import org.apache.calcite.config.CalciteConnectionConfig;
+import org.apache.calcite.config.CalciteConnectionConfigImpl;
+import org.apache.calcite.config.CalciteConnectionProperty;
+import org.apache.calcite.jdbc.CalciteSchema;
+import org.apache.calcite.plan.RelOptCluster;
+import org.apache.calcite.plan.RelOptUtil;
+import org.apache.calcite.prepare.CalciteCatalogReader;
+import org.apache.calcite.rel.RelNode;
+import org.apache.calcite.rel.type.RelDataTypeFactory;
+import org.apache.calcite.rel.type.RelDataTypeSystem;
+import org.apache.calcite.rex.RexBuilder;
+import org.apache.calcite.schema.SchemaPlus;
+import org.apache.calcite.sql.SqlNode;
+import org.apache.calcite.sql.fun.SqlStdOperatorTable;
+import org.apache.calcite.sql.parser.SqlParser;
+import org.apache.calcite.sql.type.SqlTypeFactoryImpl;
+import org.apache.calcite.sql.validate.SqlValidator;
+import org.apache.calcite.sql.validate.SqlValidatorUtil;
+import org.apache.calcite.sql2rel.SqlToRelConverter;
+import org.apache.calcite.tools.Frameworks;
+
+import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+import java.util.function.Supplier;
+
+/**
+ * Top-level entry point. Build with {@link #builder()}, register streams and
+ * reference tables + optional UDFs, then {@link #compile(String)} to get a
+ * {@link PreparedQuery} you execute repeatedly.
+ *
+ * <p>Phase 1 supports: SELECT with WHERE and column projection (with aliases and
+ * expressions). Subsequent phases add hash aggregate, external sort, hash join
+ * against reference tables, and — Phase 2+ — event-time windows.</p>
+ *
+ * <pre>{@code
+ * JvsSqlEngine engine = JvsSqlEngine.builder()
+ *     .withSpillDirectory(spillDir)
+ *     .registerStream("docs", jvsIterator, docType)
+ *     .build();
+ *
+ * PreparedQuery q = engine.compile("SELECT filename FROM docs WHERE file_size > 1000");
+ *
+ * // pull:
+ * AbstractIterator<JsonNode> rows = q.asIterator();
+ * while (rows.hasNext()) { ... }
+ *
+ * // push:
+ * q.execute(mySinkOfJsonNode);
+ * }</pre>
+ */
+public final class JvsSqlEngine {
+
+    private final EngineConfig engineConfig;
+    private final JvsSchema schema;
+    private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
+
+    private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema,
+                         Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
+        this.engineConfig = engineConfig;
+        this.schema = schema;
+        this.lateDataSinks = lateDataSinks;
+    }
+
+    public EngineConfig config() { return engineConfig; }
+    public JvsSchema schema() { return schema; }
+
+    /**
+     * Parse, validate, plan, optimize the SQL. Returns a reusable prepared query.
+     *
+     * @throws JvsSqlException on parse, validation, or planning errors — including
+     *         strict-with-escape violations (unknown identifier not wrapped in DYNAMIC()).
+     */
+    public PreparedQuery compile(String sql) {
+        try {
+            RelNode plan = doCompile(sql);
+            return new PreparedQuery(this, sql, plan);
+        } catch (JvsSqlException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new JvsSqlException("failed to compile SQL: " + sql, e);
+        }
+    }
+
+    /**
+     * Reload a reference table registered with a manual or scheduled refresh policy.
+     * No-op for {@link RefreshPolicy#once()} tables.
+     * <p>Phase 1: not yet implemented — reference tables are load-once. Phase 1-late
+     * task adds refresh support.</p>
+     */
+    public void refreshReferenceTable(String name) {
+        // Phase-1-late: swap in a new snapshot of the reference table.
+        // For now this is a no-op so the API is stable.
+    }
+
+    // -- internals -----------------------------------------------------------
+
+    private RelNode doCompile(String sql) throws Exception {
+        RelDataTypeFactory typeFactory = new SqlTypeFactoryImpl(RelDataTypeSystem.DEFAULT);
+        RexBuilder rexBuilder = new RexBuilder(typeFactory);
+        SchemaPlus rootSchema = Frameworks.createRootSchema(true);
+        rootSchema.add("jvs", schema);
+
+        Properties props = new Properties();
+        props.setProperty(CalciteConnectionProperty.CASE_SENSITIVE.camelName(), "false");
+        props.setProperty(CalciteConnectionProperty.UNQUOTED_CASING.camelName(), "UNCHANGED");
+        props.setProperty(CalciteConnectionProperty.QUOTED_CASING.camelName(), "UNCHANGED");
+        CalciteConnectionConfig connectionConfig = new CalciteConnectionConfigImpl(props);
+
+        CalciteCatalogReader catalog = new CalciteCatalogReader(
+                CalciteSchema.from(rootSchema),
+                List.of("jvs"),
+                typeFactory,
+                connectionConfig);
+
+        SqlParser.Config parserCfg = SqlParser.config()
+                .withCaseSensitive(false)
+                .withUnquotedCasing(org.apache.calcite.avatica.util.Casing.UNCHANGED)
+                .withQuotedCasing(org.apache.calcite.avatica.util.Casing.UNCHANGED);
+        SqlParser parser = SqlParser.create(sql, parserCfg);
+        SqlNode sqlNode = parser.parseQuery();
+
+        SqlValidator validator = SqlValidatorUtil.newValidator(
+                SqlStdOperatorTable.instance(),
+                catalog,
+                typeFactory,
+                SqlValidator.Config.DEFAULT.withConformance(org.apache.calcite.sql.validate.SqlConformanceEnum.LENIENT));
+        SqlNode validated = validator.validate(sqlNode);
+
+        RelOptCluster cluster = RelOptCluster.create(
+                new org.apache.calcite.plan.volcano.VolcanoPlanner(), rexBuilder);
+        SqlToRelConverter converter = new SqlToRelConverter(
+                (rowType, viewName, schemaPath, viewPath) -> null,
+                validator, catalog, cluster,
+                org.apache.calcite.sql2rel.StandardConvertletTable.INSTANCE,
+                SqlToRelConverter.CONFIG);
+        RelNode logicalPlan = converter.convertQuery(validated, false, true).rel;
+
+        // Phase 1 skips the Volcano optimizer sweep and hands the logical plan
+        // straight to the executor, which handles Scan + Filter + Project. As soon
+        // as aggregate / sort / join operators land we'll register their planner rules
+        // and turn the optimizer on.
+        return logicalPlan;
+    }
+
+    public static Builder builder() { return new Builder(); }
+
+    // -- builder --------------------------------------------------------------
+
+    public static final class Builder {
+        private EngineConfig.Builder cfg = EngineConfig.builder();
+        private final JvsSchema schema = new JvsSchema();
+        private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
+
+        public Builder withSpillDirectory(BaseFile dir) { cfg.spillDir(dir); return this; }
+        public Builder withMemoryBudgetMB(int mb) { cfg.memoryBudgetMB(mb); return this; }
+        public Builder strictTypes(boolean strict) { cfg.strictTypes(strict); return this; }
+
+        /** Register a batch input source — no event time, no watermarks. */
+        public Builder registerStream(String name, Iterator<JVS> iter, Type type) {
+            return registerStream(name, iter, type, StreamConfig.batch());
+        }
+
+        /**
+         * Register a streaming input source. If {@link StreamConfig#eventTimeField()}
+         * is set, the engine will assign watermarks as records arrive; otherwise the
+         * source is treated as a finite batch.
+         *
+         * <p>The iterator is stored by reference. It is consumed once per query
+         * execution — if multiple queries need to iterate the same source, wrap it
+         * in a caching iterator upstream.</p>
+         */
+        public Builder registerStream(String name, Iterator<JVS> iter, Type type, StreamConfig sc) {
+            Supplier<Iterator<JVS>> supplier = new SingleUseSupplier(iter);
+            schema.addTable(name, new JvsTable(name, type, sc, supplier, false));
+            return this;
+        }
+
+        /** Reference table with default (load-once) refresh policy. */
+        public Builder registerReferenceTable(String name, BaseFile source, Type type) {
+            return registerReferenceTable(name, source, type, RefreshPolicy.once());
+        }
+
+        /**
+         * Reference table (dimension table) loaded from a BaseFile, JOIN-target only.
+         * <p>Phase 1: the {@code source} is remembered but not yet loaded — Phase 1-late
+         * adds the loader that reads the file (JSON-per-line by default), builds an
+         * in-memory hash index by common join keys, and wires it into HashJoin.</p>
+         */
+        public Builder registerReferenceTable(String name, BaseFile source, Type type, RefreshPolicy policy) {
+            // Phase 1: register a placeholder; iteration returns empty until the loader is wired.
+            Supplier<Iterator<JVS>> supplier = java.util.Collections::emptyIterator;
+            JvsTable t = new JvsTable(name, type, StreamConfig.batch(), supplier, true);
+            schema.addTable(name, t);
+            // TODO Phase 1-late: kick off initial load; honor RefreshPolicy for scheduled/on-demand refresh.
+            return this;
+        }
+
+        /** Route records that are too late (beyond {@code allowedLateness}) to this sink instead of dropping them. */
+        public Builder withLateDataSink(String streamName, Sink<com.fasterxml.jackson.databind.JsonNode> sink) {
+            lateDataSinks.put(streamName, sink);
+            return this;
+        }
+
+        /**
+         * Register a Java scalar function callable from SQL. The class must have a
+         * public no-arg constructor and a single public {@code eval(...)} method.
+         * <p>Phase 1: signature stable; wiring into Calcite's operator table happens
+         * in Phase 1-late alongside GROUP BY / UDAF.</p>
+         */
+        public Builder registerFunction(String name, Class<?> functionClass) {
+            // TODO Phase 1-late: register with Calcite's SqlOperatorTable / SchemaPlus.add(name, ScalarFunctionImpl.create(...))
+            return this;
+        }
+
+        /** Register a Java aggregate function (UDAF). */
+        public Builder registerAggregate(String name, Class<?> aggClass) {
+            // TODO Phase 1-late.
+            return this;
+        }
+
+        /** Register a Groovy-defined scalar function. */
+        public Builder registerGroovyFunction(String name, String groovyScript) {
+            // TODO Phase 1-late.
+            return this;
+        }
+
+        /** Register a Groovy-defined aggregate function. */
+        public Builder registerGroovyAggregate(String name, String groovyScript) {
+            // TODO Phase 1-late.
+            return this;
+        }
+
+        public JvsSqlEngine build() {
+            return new JvsSqlEngine(cfg.build(), schema, lateDataSinks);
+        }
+    }
+
+    /**
+     * Wraps a caller-supplied iterator so Calcite/executor code can request "the source"
+     * without knowing whether it's already been consumed. First call returns the iterator;
+     * subsequent calls throw — matching the reality of a live stream that can't be replayed.
+     */
+    private static final class SingleUseSupplier implements Supplier<Iterator<JVS>> {
+        private volatile Iterator<JVS> once;
+        SingleUseSupplier(Iterator<JVS> it) { this.once = it; }
+        @Override public Iterator<JVS> get() {
+            Iterator<JVS> it = once;
+            if (it == null) throw new JvsSqlException("stream source already consumed");
+            once = null;
+            return it;
+        }
+    }
+}
