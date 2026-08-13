@@ -253,6 +253,7 @@ mvn -pl hitorro-jvssql exec:java \
 | 13 | `Example13_NdjsonStreamAndGroovyAgg` | Stream from an NDJSON file via `StreamSources.ndjson(baseFile)`, aggregate with a Groovy UDAF |
 | 14 | `Example14_SessionWindows` | SESSION windows via `SessionWindows.sessionize` — clickstream sessionization with a 5-min inactivity gap |
 | 15 | `Example15_IntervalJoin` | Stream × stream time-bounded interval JOIN (INNER + LEFT), orders ⋈ shipments within ±5 minutes |
+| 16 | `Example16_StreamingAggregate` | Real incremental emit — closed windows appear in the output before the source is drained |
 
 ## Testing
 

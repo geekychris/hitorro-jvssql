@@ -248,12 +248,21 @@ public final class Executor {
     // -- aggregate ------------------------------------------------------------
 
     private Iterator<JsonNode> buildAggregate(Aggregate agg) {
-        Iterator<JsonNode> upstream = build(agg.getInput());
         ImmutableBitSet groupSet = agg.getGroupSet();
         int[] groupCols = groupSet.toArray();
         List<AggregateCall> aggCalls = agg.getAggCallList();
         List<String> outNames = agg.getRowType().getFieldNames();
         List<String> inputNames = agg.getInput().getRowType().getFieldNames();
+
+        // Try streaming path: if any group column is derived from WIN_START(event_time, size)
+        // AND the source is a registered streaming stream, use per-window incremental emit.
+        StreamingHint hint = detectStreamingWindow(agg, groupCols);
+        Iterator<JsonNode> upstream = build(agg.getInput());
+        if (hint != null) {
+            return new StreamingAggregate(
+                    upstream, groupCols, hint.groupIdx, hint.windowSize, hint.allowedLateness,
+                    aggCalls, outNames, this::aggregateFor);
+        }
 
         // Bucketize by group-key tuple.
         Map<List<JsonNode>, GroupState> groups = new LinkedHashMap<>();
@@ -332,6 +341,57 @@ public final class Executor {
                 accs[i] = fns[i].createAccumulator();
             }
         }
+    }
+
+    /** Hint that the query looks like a windowed streaming aggregate. */
+    private record StreamingHint(int groupIdx, long windowSize, long allowedLateness) {}
+
+    /**
+     * Detect whether an Aggregate can be executed as a streaming operator:
+     * <ul>
+     *   <li>Its input is a Project whose i-th output (that participates in GROUP BY)
+     *       is a call to {@code WIN_START(event_time_col, size_literal)}, and</li>
+     *   <li>The underlying TableScan is a registered streaming source
+     *       (StreamConfig.isStreaming()).</li>
+     * </ul>
+     * <p>Returns null if either check fails — the caller falls back to batch aggregate.</p>
+     */
+    private StreamingHint detectStreamingWindow(Aggregate agg, int[] groupCols) {
+        RelNode input = agg.getInput();
+        if (!(input instanceof Project proj)) return null;
+        List<RexNode> exprs = proj.getProjects();
+        for (int gi = 0; gi < groupCols.length; gi++) {
+            RexNode e = exprs.get(groupCols[gi]);
+            if (e instanceof org.apache.calcite.rex.RexCall call
+                    && "WIN_START".equalsIgnoreCase(call.getOperator().getName())
+                    && call.getOperands().size() == 2
+                    && call.getOperands().get(1) instanceof org.apache.calcite.rex.RexLiteral sizeLit) {
+                Long size = sizeLit.getValueAs(Long.class);
+                if (size == null || size <= 0) continue;
+                // Walk down to find the underlying TableScan for stream config.
+                Long lateness = findStreamAllowedLateness(input);
+                if (lateness == null) continue;   // input isn't a streaming source
+                return new StreamingHint(gi, size, lateness);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Walk a plan looking for a TableScan of a JvsTable whose StreamConfig is streaming;
+     * returns its allowedLateness or {@code null} if none found.
+     */
+    private Long findStreamAllowedLateness(RelNode node) {
+        if (node instanceof TableScan scan) {
+            com.hitorro.jvssql.schema.JvsTable t = scan.getTable().unwrap(com.hitorro.jvssql.schema.JvsTable.class);
+            if (t == null || t.streamConfig() == null || !t.streamConfig().isStreaming()) return null;
+            return t.streamConfig().allowedLatenessMillis();
+        }
+        for (RelNode child : node.getInputs()) {
+            Long l = findStreamAllowedLateness(child);
+            if (l != null) return l;
+        }
+        return null;
     }
 
     /** Resolve an aggregate call: built-in first, then FunctionRegistry (user UDAFs). */

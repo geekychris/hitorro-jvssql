@@ -150,6 +150,53 @@ class StreamingWindowTest {
     }
 
     @Test
+    void streamingAggregate_emitsClosedWindowsIncrementally() throws Exception {
+        // Two hourly windows (0..3.6M, 3.6M..7.2M). Register as a streaming source so
+        // the executor's StreamingHint detection engages. allowedLateness=0 → a window
+        // closes as soon as we see a later window's start.
+        var events = new java.util.ArrayList<JVS>();
+        events.add(ev(0 * 60_000L,   "eng",   100));
+        events.add(ev(30 * 60_000L,  "eng",   200));
+        // ↓ this row's window_start = 3_600_000, which closes the (0, ...) windows
+        events.add(ev(65 * 60_000L,  "eng",   400));
+        events.add(ev(130 * 60_000L, "sales", 500));
+
+        var engine = JvsSqlEngine.builder()
+            .registerStream("events", events.iterator(), eventsType(),
+                    com.hitorro.jvssql.config.StreamConfig.builder()
+                        .eventTimeField("event_time")
+                        .allowedLatenessMillis(0)
+                        .build())
+            .build();
+
+        long hourMs = 3_600_000L;
+        var q = engine.compile(
+            "SELECT WIN_START(event_time, " + hourMs + ") AS window_start, "
+          + "       dept, COUNT(*) AS n, SUM(file_size) AS total "
+          + "FROM   events "
+          + "GROUP BY WIN_START(event_time, " + hourMs + "), dept");
+
+        // Pull rows one at a time and observe when they arrive relative to how much
+        // of the source we've consumed. Streaming emit should give us the closed
+        // hour-0 window BEFORE we've drained the entire source.
+        var it = q.asIterator();
+        java.util.List<JsonNode> rows = new java.util.ArrayList<>();
+        while (it.hasNext()) rows.add(it.next());
+
+        // 3 output rows total: (0, eng, 2, 300), (3.6M, eng, 1, 400), (7.2M, sales, 1, 500)
+        assertThat(rows).hasSize(3);
+        // First-emitted row should be from the closed hour-0 window (window_start=0).
+        assertThat(rows.get(0).get("window_start").asLong()).isEqualTo(0L);
+        assertThat(rows.get(0).get("dept").asText()).isEqualTo("eng");
+        assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
+        assertThat(rows.get(0).get("total").asLong()).isEqualTo(300L);
+        // Hour-1 window closes when the hour-2 event (t=130min) arrives.
+        assertThat(rows.get(1).get("window_start").asLong()).isEqualTo(hourMs);
+        // Hour-2 flushed at end-of-input.
+        assertThat(rows.get(2).get("window_start").asLong()).isEqualTo(2 * hourMs);
+    }
+
+    @Test
     void hopStarts_producesMultipleWindowsPerRow() throws Exception {
         // HOP(size=60s, slide=20s): each event belongs to (size/slide) = 3 concurrent windows.
         var engine = JvsSqlEngine.builder()
