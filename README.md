@@ -36,8 +36,12 @@ graph TD
 - **Full SQL surface**: SELECT / WHERE / GROUP BY / HAVING / ORDER BY / JOIN /
   subqueries / CASE / IN / BETWEEN / LIKE / date+string+math functions — courtesy
   of Calcite parser + validator + planner
-- **Streaming semantics**: TUMBLE / HOP / SESSION time windows with event-time
-  attributes and watermarks (SQL WATERMARK clause on registered streams)
+- **Streaming semantics** (Phase 2 v1): event-time attribute per registered stream,
+  watermark-aware source that drops (or side-outputs) late records, and scalar
+  window-bucket functions `WIN_START(event_time, size)` / `WIN_END(...)` /
+  `WIN_HOP_STARTS(...)` you compose into a normal `GROUP BY`. Phase 2-late adds
+  the streaming `TABLE(TUMBLE(...))` SQL syntax with incremental emit as
+  watermarks advance, plus HOP / SESSION and stream × stream time-bounded joins.
 - **JOINs**: stream × reference-table (dimension lookup, hash-indexed) and
   stream × stream interval joins (both sides buffered by watermark)
 - **Sort with spill-to-disk**: external merge sort, spills to a spillable
@@ -244,6 +248,7 @@ mvn -pl hitorro-jvssql exec:java \
 | 08 | `Example08_ReferenceJoin` | Stream × reference-table INNER + LEFT joins (dimension enrichment) |
 | 09 | `Example09_ExternalSort`  | ORDER BY with spill-to-disk when the buffer overflows |
 | 10 | `Example10_UserAggregate` | Register a Java UDAF (init/add/result) and use it in GROUP BY |
+| 11 | `Example11_StreamingWindows` | Event-time tumbling-window aggregation + late-data side sink (Phase 2 v1) |
 
 ## Testing
 

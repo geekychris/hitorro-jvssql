@@ -75,23 +75,48 @@ public final class JvsSqlEngine {
     private final FunctionRegistry functions;
     private final Map<String, Class<?>> userJavaScalars;
     private final Map<String, Class<?>> userJavaAggregates;
+    private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs;
     private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
+    private final java.util.concurrent.ScheduledExecutorService refresher;
 
     private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema, FunctionRegistry functions,
                          Map<String, Class<?>> userJavaScalars,
                          Map<String, Class<?>> userJavaAggregates,
+                         Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs,
                          Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
         this.schema = schema;
         this.functions = functions;
         this.userJavaScalars = userJavaScalars;
         this.userJavaAggregates = userJavaAggregates;
+        this.refSpecs = refSpecs;
         this.lateDataSinks = lateDataSinks;
+        // Spin up a small scheduler if any reference table needs periodic refresh.
+        boolean anyScheduled = refSpecs.values().stream()
+                .anyMatch(s -> s.policy().kind() == com.hitorro.jvssql.config.RefreshPolicy.Kind.SCHEDULED);
+        if (anyScheduled) {
+            this.refresher = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "jvssql-ref-refresher");
+                t.setDaemon(true);
+                return t;
+            });
+            for (var e : refSpecs.entrySet()) {
+                var s = e.getValue();
+                if (s.policy().kind() != com.hitorro.jvssql.config.RefreshPolicy.Kind.SCHEDULED) continue;
+                long intervalMs = s.policy().interval().toMillis();
+                refresher.scheduleWithFixedDelay(
+                        () -> { try { refreshReferenceTable(s.name()); } catch (Exception ignored) {} },
+                        intervalMs, intervalMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            }
+        } else {
+            this.refresher = null;
+        }
     }
 
     public EngineConfig config() { return engineConfig; }
     public JvsSchema schema() { return schema; }
     public FunctionRegistry functions() { return functions; }
+    public Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks() { return lateDataSinks; }
 
     /**
      * Parse, validate, plan, optimize the SQL. Returns a reusable prepared query.
@@ -112,13 +137,32 @@ public final class JvsSqlEngine {
 
     /**
      * Reload a reference table registered with a manual or scheduled refresh policy.
-     * No-op for {@link RefreshPolicy#once()} tables.
-     * <p>Phase 1: not yet implemented — reference tables are load-once. Phase 1-late
-     * task adds refresh support.</p>
+     * Swap is atomic — in-flight queries continue against the old snapshot until
+     * their next execution starts. No-op for tables registered with
+     * {@link RefreshPolicy#once()}.
      */
     public void refreshReferenceTable(String name) {
-        // Phase-1-late: swap in a new snapshot of the reference table.
-        // For now this is a no-op so the API is stable.
+        var spec = refSpecs.get(name);
+        if (spec == null) {
+            throw new JvsSqlException("no reference table registered under name: " + name);
+        }
+        if (spec.policy().kind() == RefreshPolicy.Kind.ONCE) {
+            return;    // silently ignore — user picked once()
+        }
+        java.util.List<JVS> reloaded = com.hitorro.jvssql.refdata.ReferenceTableLoader.load(spec.source());
+        var table = schema.getJvsTable(name);
+        if (table == null) {
+            throw new JvsSqlException("reference table disappeared from schema: " + name);
+        }
+        table.setReferenceRows(reloaded);   // atomic swap of the volatile field
+    }
+
+    /**
+     * Shut down the background refresh scheduler (if any). Idempotent. In-flight
+     * queries continue to completion.
+     */
+    public void close() {
+        if (refresher != null) refresher.shutdownNow();
     }
 
     // -- internals -----------------------------------------------------------
@@ -205,6 +249,7 @@ public final class JvsSqlEngine {
         private final FunctionRegistry functions = new FunctionRegistry();
         private final Map<String, Class<?>> userJavaScalars = new LinkedHashMap<>();
         private final Map<String, Class<?>> userJavaAggregates = new LinkedHashMap<>();
+        private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs = new LinkedHashMap<>();
         private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
         public Builder withSpillDirectory(BaseFile dir) { cfg.spillDir(dir); return this; }
@@ -255,7 +300,7 @@ public final class JvsSqlEngine {
             JvsTable t = new JvsTable(name, type, StreamConfig.batch(), supplier, true);
             t.setReferenceRows(loaded);
             schema.addTable(name, t);
-            // TODO Phase 1-late: honor RefreshPolicy — spin up a scheduled reload thread for SCHEDULED.
+            refSpecs.put(name, new com.hitorro.jvssql.refdata.RefTableSpec(name, source, policy));
             return this;
         }
 
@@ -317,7 +362,8 @@ public final class JvsSqlEngine {
         }
 
         public JvsSqlEngine build() {
-            return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, userJavaAggregates, lateDataSinks);
+            return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, userJavaAggregates,
+                    refSpecs, lateDataSinks);
         }
     }
 

@@ -111,6 +111,40 @@ class ReferenceTableAndJoinTest {
     }
 
     @Test
+    void refreshReferenceTable_picksUpNewFileContents(@TempDir Path tmpDir) throws Exception {
+        // Reference file starts with one user, we query twice against a fresh stream,
+        // then rewrite the file and refresh — third query sees the new contents.
+        var refFile = writeUsersFile(tmpDir, "[{\"email\":\"a@x.com\",\"name\":\"OldA\",\"tenure\":1}]");
+        var engine = JvsSqlEngine.builder()
+            .registerReferenceTable("users", refFile, usersType(),
+                    com.hitorro.jvssql.config.RefreshPolicy.onDemand())
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"one.pdf\",\"author\":\"a@x.com\"}")
+            ), docsType())
+            .build();
+        var out1 = run(engine.compile("SELECT u.name FROM docs d JOIN users u ON d.author = u.email"));
+        assertThat(out1.get(0).get("name").asText()).isEqualTo("OldA");
+
+        // Rewrite the reference file and refresh.
+        Files.writeString(java.nio.file.Path.of(refFile.getAbsolutePath()),
+                "[{\"email\":\"a@x.com\",\"name\":\"NewA\",\"tenure\":99}]");
+        engine.refreshReferenceTable("users");
+
+        // Re-register stream (single-use), then re-query — should see NewA.
+        var engine2 = JvsSqlEngine.builder()
+            .registerReferenceTable("users", refFile, usersType(),
+                    com.hitorro.jvssql.config.RefreshPolicy.onDemand())
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"two.pdf\",\"author\":\"a@x.com\"}")
+            ), docsType())
+            .build();
+        var out2 = run(engine2.compile("SELECT u.name FROM docs d JOIN users u ON d.author = u.email"));
+        assertThat(out2.get(0).get("name").asText()).isEqualTo("NewA");
+        engine.close();
+        engine2.close();
+    }
+
+    @Test
     void joinWithProjectionAndFilter(@TempDir Path tmpDir) throws Exception {
         var ref = writeUsersFile(tmpDir, "["
             + "{\"email\":\"chris@hitorro.com\", \"name\":\"Chris\", \"tenure\":10},"

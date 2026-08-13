@@ -37,7 +37,7 @@ public final class PreparedQuery {
 
     /** Pull results one at a time. Backpressure = natural: the engine stalls when the consumer is slow. */
     public AbstractIterator<JsonNode> asIterator() {
-        Iterator<JsonNode> raw = new Executor(plan, engine.functions(), engine.config()).execute();
+        Iterator<JsonNode> raw = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks()).execute();
         return new IteratorAdapter(raw);
     }
 
@@ -49,7 +49,7 @@ public final class PreparedQuery {
         try {
             sink.init(JsonNodeFactory.instance.objectNode());
             sink.start();
-            Iterator<JsonNode> it = new Executor(plan, engine.functions(), engine.config()).execute();
+            Iterator<JsonNode> it = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks()).execute();
             while (it.hasNext()) {
                 sink.accept(it.next());
             }

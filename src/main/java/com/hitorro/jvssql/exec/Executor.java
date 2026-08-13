@@ -59,12 +59,15 @@ public final class Executor {
     private final RelNode plan;
     private final FunctionRegistry functions;
     private final com.hitorro.jvssql.config.EngineConfig engineConfig;
+    private final java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks;
     private final RexEvaluator rex;
 
-    public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig) {
+    public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig,
+                    java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks) {
         this.plan = plan;
         this.functions = functions;
         this.engineConfig = engineConfig;
+        this.lateDataSinks = lateDataSinks == null ? java.util.Map.of() : lateDataSinks;
         this.rex = new RexEvaluator(functions);
     }
 
@@ -96,7 +99,68 @@ public final class Executor {
         Iterator<JVS> src = table.openIterator();
         List<String> cols = scan.getRowType().getFieldNames();
         RowProjector projector = new RowProjector(cols.toArray(new String[0]));
+        // Wrap with a watermark-aware source if the stream config declares an event-time field.
+        // Records more than allowedLateness behind the current watermark are routed to the
+        // late-data sink (if any) or silently dropped.
+        var sc = table.streamConfig();
+        if (sc != null && sc.isStreaming()) {
+            com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink = lateDataSinks.get(table.getName());
+            src = new WatermarkFilter(src, sc.eventTimeField(), sc.allowedLatenessMillis(), lateSink);
+        }
         return new ScanIterator(src, projector, functions);
+    }
+
+    /**
+     * Watermark-aware source wrapper. Maintains {@code maxEventTime - allowedLateness}
+     * as the current watermark; drops (or side-outputs) records whose event time is
+     * below the watermark.
+     */
+    private static final class WatermarkFilter implements Iterator<JVS> {
+        private final Iterator<JVS> upstream;
+        private final com.hitorro.util.json.keys.propaccess.Propaccess eventTimePath;
+        private final long allowedLatenessMillis;
+        private final com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink;
+        private long maxObservedEventTime = Long.MIN_VALUE;
+        private JVS nextRow;
+        WatermarkFilter(Iterator<JVS> upstream, String eventTimeField, long allowedLatenessMillis, com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink) {
+            this.upstream = upstream;
+            this.eventTimePath = new com.hitorro.util.json.keys.propaccess.Propaccess(eventTimeField);
+            this.allowedLatenessMillis = allowedLatenessMillis;
+            this.lateSink = lateSink;
+        }
+        @Override public boolean hasNext() {
+            while (nextRow == null && upstream.hasNext()) {
+                JVS candidate = upstream.next();
+                long ts = extractEventTime(candidate);
+                long watermark = maxObservedEventTime == Long.MIN_VALUE
+                        ? Long.MIN_VALUE : maxObservedEventTime - allowedLatenessMillis;
+                if (ts < watermark) {
+                    // Late record.
+                    if (lateSink != null) {
+                        try { lateSink.add(candidate.getJsonNode()); } catch (Exception ignored) {}
+                    }
+                    continue;
+                }
+                maxObservedEventTime = Math.max(maxObservedEventTime, ts);
+                nextRow = candidate;
+            }
+            return nextRow != null;
+        }
+        @Override public JVS next() {
+            if (!hasNext()) throw new NoSuchElementException();
+            JVS out = nextRow; nextRow = null; return out;
+        }
+        private long extractEventTime(JVS row) {
+            try {
+                JsonNode v = eventTimePath.get(row, row.getJsonNode(),
+                        com.hitorro.util.json.keys.propaccess.PAContext.AlwaysCreate);
+                if (v == null || v.isNull()) return 0L;
+                if (v.isNumber()) return v.asLong();
+                return java.time.Instant.parse(v.asText()).toEpochMilli();
+            } catch (Exception e) {
+                return 0L;
+            }
+        }
     }
 
     private static final class ScanIterator implements Iterator<JsonNode> {

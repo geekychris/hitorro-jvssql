@@ -23,4 +23,13 @@ public final class BuiltInFunctions {
 
     /** MLS_LANGS(mls_envelope) — returns list of languages present in the envelope. */
     public static Object MLS_LANGS(Object envelope) { throw new UnsupportedOperationException("dispatched by executor"); }
+
+    /** WIN_START(event_time_millis, window_size_millis) — start of the bucket a timestamp falls into. */
+    public static long WIN_START(long eventTime, long windowSize) { throw new UnsupportedOperationException("dispatched by executor"); }
+
+    /** WIN_END(event_time_millis, window_size_millis) — end (exclusive) of the bucket a timestamp falls into. */
+    public static long WIN_END(long eventTime, long windowSize) { throw new UnsupportedOperationException("dispatched by executor"); }
+
+    /** WIN_HOP_STARTS(event_time_millis, window_size_millis, slide_millis) — list of window starts a timestamp belongs to. */
+    public static Object WIN_HOP_STARTS(long eventTime, long windowSize, long slide) { throw new UnsupportedOperationException("dispatched by executor"); }
 }

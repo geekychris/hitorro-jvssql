@@ -157,6 +157,43 @@ class ExpressionsTest {
     }
 
     @Test
+    void notLike_notIn_notBetween() throws Exception {
+        var engine = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"report.pdf\",   \"classification\":\"public\",   \"file_size\":100}"),
+                jvs("{\"filename\":\"invoice.pdf\",  \"classification\":\"internal\", \"file_size\":500}"),
+                jvs("{\"filename\":\"notes.txt\",    \"classification\":\"public\",   \"file_size\":2000}"),
+                jvs("{\"filename\":\"draft.md\",     \"classification\":\"restricted\", \"file_size\":50}")
+            ), docsType()).build();
+        // NOT LIKE
+        assertThat(run(engine.compile("SELECT filename FROM docs WHERE filename NOT LIKE '%.pdf'")))
+            .extracting(r -> r.get("filename").asText())
+            .containsExactly("notes.txt", "draft.md");
+        // NOT IN
+        var engine2 = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"report.pdf\",   \"classification\":\"public\",   \"file_size\":100}"),
+                jvs("{\"filename\":\"invoice.pdf\",  \"classification\":\"internal\", \"file_size\":500}"),
+                jvs("{\"filename\":\"notes.txt\",    \"classification\":\"public\",   \"file_size\":2000}"),
+                jvs("{\"filename\":\"draft.md\",     \"classification\":\"restricted\", \"file_size\":50}")
+            ), docsType()).build();
+        assertThat(run(engine2.compile("SELECT filename FROM docs WHERE classification NOT IN ('public', 'internal')")))
+            .extracting(r -> r.get("filename").asText())
+            .containsExactly("draft.md");
+        // NOT BETWEEN
+        var engine3 = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"report.pdf\",   \"classification\":\"public\",   \"file_size\":100}"),
+                jvs("{\"filename\":\"invoice.pdf\",  \"classification\":\"internal\", \"file_size\":500}"),
+                jvs("{\"filename\":\"notes.txt\",    \"classification\":\"public\",   \"file_size\":2000}"),
+                jvs("{\"filename\":\"draft.md\",     \"classification\":\"restricted\", \"file_size\":50}")
+            ), docsType()).build();
+        assertThat(run(engine3.compile("SELECT filename FROM docs WHERE file_size NOT BETWEEN 100 AND 500")))
+            .extracting(r -> r.get("filename").asText())
+            .containsExactly("notes.txt", "draft.md");
+    }
+
+    @Test
     void isNull_isNotNull() throws Exception {
         var engine = JvsSqlEngine.builder()
             .registerStream("docs", stream(

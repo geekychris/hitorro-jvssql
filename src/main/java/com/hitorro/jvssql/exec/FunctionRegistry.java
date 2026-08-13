@@ -154,6 +154,37 @@ public final class FunctionRegistry {
             return null;
         });
 
+        // Windowing scalars — compute bucket boundaries for tumbling / hopping windows.
+        // For Phase 2 batch-mode windowed aggregation: use these to GROUP BY on the
+        // window start/end. Phase 2-late adds the streaming TABLE(TUMBLE(...)) syntax
+        // with incremental emit as watermarks advance.
+        putScalar("WIN_START", args -> {
+            Long ts = numToLong(args[0]);
+            Long size = numToLong(args[1]);
+            if (ts == null || size == null || size <= 0) return null;
+            return Math.floorDiv(ts, size) * size;
+        });
+        putScalar("WIN_END", args -> {
+            Long ts = numToLong(args[0]);
+            Long size = numToLong(args[1]);
+            if (ts == null || size == null || size <= 0) return null;
+            return Math.floorDiv(ts, size) * size + size;
+        });
+        putScalar("WIN_HOP_STARTS", args -> {
+            // Returns the list of window-start times a given event belongs to under
+            // a HOP(size, slide) schedule. Users can UNNEST to duplicate rows across windows.
+            Long ts = numToLong(args[0]);
+            Long size = numToLong(args[1]);
+            Long slide = numToLong(args[2]);
+            if (ts == null || size == null || slide == null || size <= 0 || slide <= 0) return null;
+            java.util.List<Long> out = new java.util.ArrayList<>();
+            long firstStart = Math.floorDiv(ts - size + slide, slide) * slide;
+            for (long s = firstStart; s <= ts; s += slide) {
+                if (ts < s + size) out.add(s);
+            }
+            return out;
+        });
+
         putScalar("MLS_LANGS", args -> {
             Object envelope = args[0];
             if (!(envelope instanceof JsonNode env)) return null;
@@ -169,6 +200,12 @@ public final class FunctionRegistry {
     }
 
     // -- small coercion helpers ----------------------------------------------
+
+    private static Long numToLong(Object o) {
+        if (o == null) return null;
+        if (o instanceof Number n) return n.longValue();
+        try { return Long.parseLong(o.toString()); } catch (Exception e) { return null; }
+    }
 
     private static String str(Object o) { return o == null ? null : o.toString(); }
     private static long   lng(Object o) {
