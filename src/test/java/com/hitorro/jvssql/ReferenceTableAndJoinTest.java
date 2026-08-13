@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static com.hitorro.jvssql.TestSupport.docsType;
 import static com.hitorro.jvssql.TestSupport.jvs;
@@ -142,6 +143,57 @@ class ReferenceTableAndJoinTest {
         assertThat(out2.get(0).get("name").asText()).isEqualTo("NewA");
         engine.close();
         engine2.close();
+    }
+
+    @Test
+    void intervalJoin_streamXstreamWithinTimeBound() throws Exception {
+        // orders and shipments streamed side-by-side; join if same order_id AND shipment
+        // event_time is within 5 minutes of the order event_time.
+        // We drive this as INTERVAL '5' MINUTE (300000 ms). Setup:
+        //   order o1 at t=100
+        //   order o2 at t=1_000_000
+        //   ship  o1 at t=200        → matches (100 ± 300k)
+        //   ship  o1 at t=400_000    → outside 5-min window, no match
+        //   ship  o2 at t=1_000_500  → matches
+        String ordersJson = "{\"name\":\"orders\",\"fields\":["
+            + "{\"name\":\"order_id\",\"type\":\"core_string\"},"
+            + "{\"name\":\"o_ts\",   \"type\":\"core_long\"}"
+            + "]}";
+        String shipmentsJson = "{\"name\":\"shipments\",\"fields\":["
+            + "{\"name\":\"order_id\",\"type\":\"core_string\"},"
+            + "{\"name\":\"s_ts\",   \"type\":\"core_long\"}"
+            + "]}";
+        var oType = new com.hitorro.jsontypesystem.Type(); oType.init(TestSupport.MAPPER.readTree(ordersJson));
+        var sType = new com.hitorro.jsontypesystem.Type(); sType.init(TestSupport.MAPPER.readTree(shipmentsJson));
+
+        var orders = List.of(
+            new com.hitorro.jsontypesystem.JVS(TestSupport.MAPPER.readTree("{\"order_id\":\"o1\",\"o_ts\":100}")),
+            new com.hitorro.jsontypesystem.JVS(TestSupport.MAPPER.readTree("{\"order_id\":\"o2\",\"o_ts\":1000000}"))
+        ).iterator();
+        var shipments = List.of(
+            new com.hitorro.jsontypesystem.JVS(TestSupport.MAPPER.readTree("{\"order_id\":\"o1\",\"s_ts\":200}")),
+            new com.hitorro.jsontypesystem.JVS(TestSupport.MAPPER.readTree("{\"order_id\":\"o1\",\"s_ts\":400000}")),
+            new com.hitorro.jsontypesystem.JVS(TestSupport.MAPPER.readTree("{\"order_id\":\"o2\",\"s_ts\":1000500}"))
+        ).iterator();
+
+        var engine = JvsSqlEngine.builder()
+            .registerStream("orders", orders, oType)
+            .registerStream("shipments", shipments, sType)
+            .build();
+
+        // 300000 ms = 5 minutes tolerance
+        var rows = run(engine.compile(
+            "SELECT o.order_id, o.o_ts, s.s_ts "
+          + "FROM   orders o JOIN shipments s "
+          + "  ON   o.order_id = s.order_id "
+          + "  AND  s.s_ts BETWEEN o.o_ts - 300000 AND o.o_ts + 300000 "
+          + "ORDER BY o.o_ts, s.s_ts"));
+
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("order_id").asText()).isEqualTo("o1");
+        assertThat(rows.get(0).get("s_ts").asLong()).isEqualTo(200);
+        assertThat(rows.get(1).get("order_id").asText()).isEqualTo("o2");
+        assertThat(rows.get(1).get("s_ts").asLong()).isEqualTo(1_000_500);
     }
 
     @Test

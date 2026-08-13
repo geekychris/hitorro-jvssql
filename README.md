@@ -252,6 +252,7 @@ mvn -pl hitorro-jvssql exec:java \
 | 12 | `Example12_GroovyAndNestedWindow` | Groovy inline scalar UDFs + nested `{"window":{"start":..., "end":...}}` result via `WIN_STRUCT` |
 | 13 | `Example13_NdjsonStreamAndGroovyAgg` | Stream from an NDJSON file via `StreamSources.ndjson(baseFile)`, aggregate with a Groovy UDAF |
 | 14 | `Example14_SessionWindows` | SESSION windows via `SessionWindows.sessionize` — clickstream sessionization with a 5-min inactivity gap |
+| 15 | `Example15_IntervalJoin` | Stream × stream time-bounded interval JOIN (INNER + LEFT), orders ⋈ shipments within ±5 minutes |
 
 ## Testing
 

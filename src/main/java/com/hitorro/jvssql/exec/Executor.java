@@ -424,9 +424,20 @@ public final class Executor {
             throw new JvsSqlException("Phase 1 supports INNER and LEFT joins only; got " + joinType);
         }
         JoinInfo info = join.analyzeCondition();
-        if (info.leftKeys.isEmpty() || info.rightKeys.isEmpty() || !info.isEqui()) {
-            throw new JvsSqlException("Phase 1 supports equijoins only. Condition was: " + join.getCondition());
+        if (info.leftKeys.isEmpty() || info.rightKeys.isEmpty()) {
+            throw new JvsSqlException("Phase 1 join requires at least one equijoin key. Condition was: "
+                    + join.getCondition());
         }
+
+        // Non-equi residual: everything Calcite couldn't push into the hash-key tuple.
+        // This is what makes interval joins work:
+        //   ON o.id = s.id AND s.ts BETWEEN o.ts - INTERVAL AND o.ts + INTERVAL
+        // The equality becomes hash keys; the BETWEEN becomes the residual, evaluated
+        // on the combined (left+right) row after each hash match.
+        var cluster = join.getCluster();
+        org.apache.calcite.rex.RexNode residual = info.getRemaining(cluster.getRexBuilder());
+        // Convert isAlwaysTrue → null so we skip the eval per row.
+        if (residual != null && residual.isAlwaysTrue()) residual = null;
 
         // Build side: fully drain the right input into a hash-index by right-key tuple.
         Iterator<JsonNode> rightIt = build(join.getRight());
@@ -442,11 +453,11 @@ public final class Executor {
             hash.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(rightRow);
         }
 
-        // Probe side: iterate left, look up matches.
+        // Probe side: iterate left, look up matches, then apply the residual.
         Iterator<JsonNode> leftIt = build(join.getLeft());
         int[] leftKeyCols = info.leftKeys.stream().mapToInt(Integer::intValue).toArray();
         return new HashJoinIterator(leftIt, hash, leftKeyCols, leftFieldCount, rightFieldCount,
-                outNames, joinType == JoinRelType.LEFT);
+                outNames, joinType == JoinRelType.LEFT, residual, rex);
     }
 
     private static List<JsonNode> keyTuple(JsonNode row, int[] keyCols) {
@@ -463,37 +474,58 @@ public final class Executor {
         private final int rightFieldCount;
         private final List<String> outNames;
         private final boolean isLeftJoin;
+        private final org.apache.calcite.rex.RexNode residual;   // may be null
+        private final RexEvaluator rex;
         private JsonNode nextOut;
         private JsonNode pendingLeft;
         private Iterator<JsonNode> pendingRightMatches;
+        private boolean pendingLeftMatched;   // for LEFT-join fallback
 
         HashJoinIterator(Iterator<JsonNode> left,
                          java.util.Map<List<JsonNode>, List<JsonNode>> hash,
                          int[] leftKeyCols, int leftFieldCount, int rightFieldCount,
-                         List<String> outNames, boolean isLeftJoin) {
+                         List<String> outNames, boolean isLeftJoin,
+                         org.apache.calcite.rex.RexNode residual, RexEvaluator rex) {
             this.left = left; this.hash = hash;
             this.leftKeyCols = leftKeyCols;
             this.leftFieldCount = leftFieldCount;
             this.rightFieldCount = rightFieldCount;
             this.outNames = outNames;
             this.isLeftJoin = isLeftJoin;
+            this.residual = residual;
+            this.rex = rex;
         }
 
         @Override public boolean hasNext() {
             while (nextOut == null) {
-                // Continue emitting a still-open cross-product of the current left row.
-                if (pendingRightMatches != null && pendingRightMatches.hasNext()) {
-                    nextOut = combine(pendingLeft, pendingRightMatches.next());
+                // Continue draining right-side matches for the current left row.
+                while (pendingRightMatches != null && pendingRightMatches.hasNext()) {
+                    JsonNode candidate = combine(pendingLeft, pendingRightMatches.next());
+                    if (residual == null || rex.evalBool(residual, candidate)) {
+                        pendingLeftMatched = true;
+                        nextOut = candidate;
+                        return true;
+                    }
+                    // residual rejected this pair — try the next right-side match.
+                }
+                // No more right matches for the current left row. For LEFT joins, if
+                // none of the right candidates passed the residual, emit the null-padded row.
+                if (pendingLeft != null && isLeftJoin && !pendingLeftMatched) {
+                    nextOut = combine(pendingLeft, null);
+                    pendingLeft = null;
+                    pendingRightMatches = null;
                     return true;
                 }
+                pendingLeft = null;
                 pendingRightMatches = null;
+                pendingLeftMatched = false;
+
                 if (!left.hasNext()) return false;
                 JsonNode leftRow = left.next();
                 List<JsonNode> key = keyTuple(leftRow, leftKeyCols);
                 List<JsonNode> matches = hash.get(key);
                 if (matches == null || matches.isEmpty()) {
                     if (isLeftJoin) {
-                        // LEFT JOIN preserves the left row with NULLs on the right side.
                         nextOut = combine(leftRow, null);
                         return true;
                     }
