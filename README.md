@@ -206,9 +206,58 @@ Java 21 is required.
 | Runtime | `org.apache.calcite:calcite-core` | SQL parser, validator, planner, optimizer |
 | Provided | `org.apache.groovy:groovy` | Groovy-defined UDF / UDAF (optional at runtime) |
 
+## Running the examples
+
+Every capability has a runnable example in `com.hitorro.jvssql.examples`.
+Each one is a self-contained `main()` you can also read as a recipe.
+
+```bash
+cd hitorro-jvssql
+
+# List them
+./run-example.sh
+
+# Run one by number or name-fragment
+./run-example.sh 01
+./run-example.sh BasicSelect
+
+# Or run every example end-to-end
+./run-example.sh all
+```
+
+Direct Maven form (works from IntelliJ too, right-click → Run):
+
+```bash
+mvn -pl hitorro-jvssql exec:java \
+    -Dexec.mainClass="com.hitorro.jvssql.examples.Example03_Aggregates"
+```
+
+| # | Example | What it shows |
+|---|---------|---------------|
+| 01 | `Example01_BasicSelect`   | Register a stream, run SELECT + WHERE |
+| 02 | `Example02_Expressions`   | CASE, LIKE, IN, BETWEEN, arithmetic, string/math scalars |
+| 03 | `Example03_Aggregates`    | GROUP BY + COUNT/SUM/AVG/MIN/MAX + HAVING |
+| 04 | `Example04_SortAndLimit`  | ORDER BY / LIMIT / OFFSET; sort after GROUP BY |
+| 05 | `Example05_DynamicAndMls` | `JPATH('path')` for undeclared fields; `MLS(field, 'lang')` |
+| 06 | `Example06_JavaUdf`       | Register a Java class as a scalar SQL function |
+| 07 | `Example07_PushToSink`    | Push results to a `Sink<JsonNode>` instead of pulling |
+
+## Testing
+
+```bash
+mvn -pl hitorro-jvssql test
+```
+
+Tests are organized one class per feature — `ExpressionsTest`,
+`AggregatesTest`, `SortTest`, `DynamicAndMlsTest`, `UdfTest`, plus the
+top-level `BasicSelectTest`. Add new tests alongside the existing ones as
+new operators land.
+
 ## Status
 
-Alpha. Phase 1 in progress.
+Alpha. Phase 1 in progress — every capability listed under **What it does**
+is either implemented or has a clear TODO landing in an upcoming task on
+Phase 1. See the git log on the `main` branch for progress.
 
 ## License
 

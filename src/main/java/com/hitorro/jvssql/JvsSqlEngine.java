@@ -8,6 +8,9 @@ import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.config.EngineConfig;
 import com.hitorro.jvssql.config.RefreshPolicy;
 import com.hitorro.jvssql.config.StreamConfig;
+import com.hitorro.jvssql.exec.AggregateFn;
+import com.hitorro.jvssql.exec.FunctionRegistry;
+import com.hitorro.jvssql.exec.ScalarFn;
 import com.hitorro.jvssql.schema.JvsSchema;
 import com.hitorro.jvssql.schema.JvsTable;
 import com.hitorro.util.basefile.fs.BaseFile;
@@ -69,17 +72,23 @@ public final class JvsSqlEngine {
 
     private final EngineConfig engineConfig;
     private final JvsSchema schema;
+    private final FunctionRegistry functions;
+    private final Map<String, Class<?>> userJavaScalars;
     private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
 
-    private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema,
+    private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema, FunctionRegistry functions,
+                         Map<String, Class<?>> userJavaScalars,
                          Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
         this.schema = schema;
+        this.functions = functions;
+        this.userJavaScalars = userJavaScalars;
         this.lateDataSinks = lateDataSinks;
     }
 
     public EngineConfig config() { return engineConfig; }
     public JvsSchema schema() { return schema; }
+    public FunctionRegistry functions() { return functions; }
 
     /**
      * Parse, validate, plan, optimize the SQL. Returns a reusable prepared query.
@@ -115,7 +124,21 @@ public final class JvsSqlEngine {
         RelDataTypeFactory typeFactory = new SqlTypeFactoryImpl(RelDataTypeSystem.DEFAULT);
         RexBuilder rexBuilder = new RexBuilder(typeFactory);
         SchemaPlus rootSchema = Frameworks.createRootSchema(true);
-        rootSchema.add("jvs", schema);
+        SchemaPlus jvsSchema = rootSchema.add("jvs", schema);
+        // Register built-in JVS-specific functions on the jvs schema — the
+        // CalciteCatalogReader default path is "jvs" so unqualified calls resolve here.
+        // Registering on both root and jvs would trip a Calcite duplicate-candidate assertion.
+        for (var m : com.hitorro.jvssql.udf.BuiltInFunctions.class.getDeclaredMethods()) {
+            if (java.lang.reflect.Modifier.isStatic(m.getModifiers()) && java.lang.reflect.Modifier.isPublic(m.getModifiers())) {
+                jvsSchema.add(m.getName(), org.apache.calcite.schema.impl.ScalarFunctionImpl.create(m));
+            }
+        }
+        for (var e : userJavaScalars.entrySet()) {
+            jvsSchema.add(e.getKey().toUpperCase(),
+                    org.apache.calcite.schema.impl.ScalarFunctionImpl.create(e.getValue(), "eval"));
+        }
+        // TODO Phase 1-late: aggregates + Groovy dispatch via a synthetic Java method
+        // signature that the validator can consume.
 
         Properties props = new Properties();
         props.setProperty(CalciteConnectionProperty.CASE_SENSITIVE.camelName(), "false");
@@ -136,8 +159,14 @@ public final class JvsSqlEngine {
         SqlParser parser = SqlParser.create(sql, parserCfg);
         SqlNode sqlNode = parser.parseQuery();
 
+        // Chain the standard SQL operators with our own catalog reader — the reader
+        // exposes schema-registered functions (JPATH, MLS, user UDFs) to the validator.
+        org.apache.calcite.sql.SqlOperatorTable opTable =
+                org.apache.calcite.sql.util.SqlOperatorTables.chain(
+                        SqlStdOperatorTable.instance(),
+                        catalog);
         SqlValidator validator = SqlValidatorUtil.newValidator(
-                SqlStdOperatorTable.instance(),
+                opTable,
                 catalog,
                 typeFactory,
                 SqlValidator.Config.DEFAULT.withConformance(org.apache.calcite.sql.validate.SqlConformanceEnum.LENIENT));
@@ -166,6 +195,8 @@ public final class JvsSqlEngine {
     public static final class Builder {
         private EngineConfig.Builder cfg = EngineConfig.builder();
         private final JvsSchema schema = new JvsSchema();
+        private final FunctionRegistry functions = new FunctionRegistry();
+        private final Map<String, Class<?>> userJavaScalars = new LinkedHashMap<>();
         private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
         public Builder withSpillDirectory(BaseFile dir) { cfg.spillDir(dir); return this; }
@@ -220,35 +251,56 @@ public final class JvsSqlEngine {
 
         /**
          * Register a Java scalar function callable from SQL. The class must have a
-         * public no-arg constructor and a single public {@code eval(...)} method.
-         * <p>Phase 1: signature stable; wiring into Calcite's operator table happens
-         * in Phase 1-late alongside GROUP BY / UDAF.</p>
+         * public no-arg constructor and a single public {@code eval(...)} method
+         * whose parameters and return are one of: primitive, boxed primitive, String,
+         * or {@link com.fasterxml.jackson.databind.JsonNode} (for raw JSON access).
+         *
+         * <p>Example: {@code public class Hash64 { public long eval(String s) { ... } }}
+         * then {@code .registerFunction("hash64", Hash64.class)} lets you write
+         * {@code SELECT hash64(filename) FROM docs}.</p>
          */
         public Builder registerFunction(String name, Class<?> functionClass) {
-            // TODO Phase 1-late: register with Calcite's SqlOperatorTable / SchemaPlus.add(name, ScalarFunctionImpl.create(...))
+            functions.putScalar(name, com.hitorro.jvssql.udf.JavaScalarFn.wrap(functionClass));
+            userJavaScalars.put(name, functionClass);   // for Calcite validator registration at compile time
             return this;
         }
 
-        /** Register a Java aggregate function (UDAF). */
+        /**
+         * Register a Java aggregate function (UDAF). The class must implement
+         * {@link com.hitorro.jvssql.exec.AggregateFn} or have method-shape
+         * {@code createAccumulator()}, {@code accumulate(acc, v)}, {@code result(acc)}.
+         */
         public Builder registerAggregate(String name, Class<?> aggClass) {
-            // TODO Phase 1-late.
+            functions.putAggregate(name, com.hitorro.jvssql.udf.JavaAggregateFn.wrap(aggClass));
             return this;
         }
 
-        /** Register a Groovy-defined scalar function. */
+        /**
+         * Register a Groovy-defined scalar. The script body receives an implicit
+         * argument variable per positional arg — the first as {@code arg} (or
+         * {@code arg1}), the second as {@code arg2}, etc. Whatever the script
+         * returns is the function's result.
+         *
+         * <p>Example: {@code .registerGroovyFunction("normalize_email", "arg.toString().toLowerCase().trim()")}</p>
+         */
         public Builder registerGroovyFunction(String name, String groovyScript) {
-            // TODO Phase 1-late.
+            functions.putScalar(name, com.hitorro.jvssql.udf.GroovyScalarFn.compile(groovyScript));
             return this;
         }
 
-        /** Register a Groovy-defined aggregate function. */
+        /**
+         * Register a Groovy-defined aggregate. Script must define three closures:
+         * <pre>{@code init:   { [] as List }
+         * accum:  { acc, v -> acc.add(v); acc }
+         * result: { acc -> acc.join(',') }}</pre>
+         */
         public Builder registerGroovyAggregate(String name, String groovyScript) {
-            // TODO Phase 1-late.
+            functions.putAggregate(name, com.hitorro.jvssql.udf.GroovyAggregateFn.compile(groovyScript));
             return this;
         }
 
         public JvsSqlEngine build() {
-            return new JvsSqlEngine(cfg.build(), schema, lateDataSinks);
+            return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, lateDataSinks);
         }
     }
 
