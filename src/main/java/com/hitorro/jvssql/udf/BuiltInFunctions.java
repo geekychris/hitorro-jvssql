@@ -32,4 +32,7 @@ public final class BuiltInFunctions {
 
     /** WIN_HOP_STARTS(event_time_millis, window_size_millis, slide_millis) — list of window starts a timestamp belongs to. */
     public static Object WIN_HOP_STARTS(long eventTime, long windowSize, long slide) { throw new UnsupportedOperationException("dispatched by executor"); }
+
+    /** WIN_STRUCT(event_time_millis, window_size_millis) — {@code {"start": ..., "end": ...}} object. */
+    public static Object WIN_STRUCT(long eventTime, long windowSize) { throw new UnsupportedOperationException("dispatched by executor"); }
 }

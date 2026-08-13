@@ -249,6 +249,7 @@ mvn -pl hitorro-jvssql exec:java \
 | 09 | `Example09_ExternalSort`  | ORDER BY with spill-to-disk when the buffer overflows |
 | 10 | `Example10_UserAggregate` | Register a Java UDAF (init/add/result) and use it in GROUP BY |
 | 11 | `Example11_StreamingWindows` | Event-time tumbling-window aggregation + late-data side sink (Phase 2 v1) |
+| 12 | `Example12_GroovyAndNestedWindow` | Groovy inline scalar UDFs + nested `{"window":{"start":..., "end":...}}` result via `WIN_STRUCT` |
 
 ## Testing
 

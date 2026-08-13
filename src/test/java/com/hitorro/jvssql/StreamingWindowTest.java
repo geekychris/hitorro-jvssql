@@ -126,6 +126,30 @@ class StreamingWindowTest {
     }
 
     @Test
+    void winStruct_producesNestedWindowObject() throws Exception {
+        var engine = JvsSqlEngine.builder()
+            .registerStream("events", List.of(
+                    ev(15 * 60_000L, "eng", 100),
+                    ev(45 * 60_000L, "eng", 200),
+                    ev(75 * 60_000L, "eng", 300)
+            ).iterator(), eventsType()).build();
+        var rows = run(engine.compile(
+            "SELECT WIN_STRUCT(event_time, 3600000) AS \"window\", dept, COUNT(*) AS n "
+          + "FROM events "
+          + "GROUP BY WIN_STRUCT(event_time, 3600000), dept "
+          + "ORDER BY n DESC"));
+        assertThat(rows).hasSize(2);
+        // First row (n=2): window {"start":0, "end":3600000}
+        JsonNode w0 = rows.get(0).get("window");
+        assertThat(w0.get("start").asLong()).isEqualTo(0L);
+        assertThat(w0.get("end").asLong()).isEqualTo(3_600_000L);
+        assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
+        // Second row (n=1): window {"start":3600000, "end":7200000}
+        JsonNode w1 = rows.get(1).get("window");
+        assertThat(w1.get("start").asLong()).isEqualTo(3_600_000L);
+    }
+
+    @Test
     void hopStarts_producesMultipleWindowsPerRow() throws Exception {
         // HOP(size=60s, slide=20s): each event belongs to (size/slide) = 3 concurrent windows.
         var engine = JvsSqlEngine.builder()

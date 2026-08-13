@@ -56,12 +56,20 @@
             </exclusions>
         </dependency>
 
-        <!-- Groovy — for user-defined functions expressed as inline Groovy scripts -->
+        <!-- Groovy — for user-defined functions expressed as inline Groovy scripts.
+             Provided scope so runtime consumers only pay for it if they want Groovy UDFs;
+             tests add it back on their own classpath. -->
         <dependency>
             <groupId>org.apache.groovy</groupId>
             <artifactId>groovy</artifactId>
             <version>4.0.24</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.groovy</groupId>
+            <artifactId>groovy</artifactId>
+            <version>4.0.24</version>
+            <scope>test</scope>
         </dependency>
 
         <!-- Calcite core transitively requires json-path at runtime for a few

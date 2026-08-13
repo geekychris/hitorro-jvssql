@@ -12,13 +12,18 @@ import com.hitorro.jvssql.exec.ScalarFn;
  * value becomes the function result.
  *
  * <p>Groovy is an optional {@code provided} dependency; if it's not on the
- * classpath at runtime, {@link #compile(String)} throws with a clear message.</p>
+ * classpath at runtime, {@link #compile(String, int)} throws with a clear
+ * message. Arity must be declared at registration so Calcite's validator
+ * can type-check calls (Groovy closures don't carry SQL-compatible metadata).</p>
  */
 public final class GroovyScalarFn {
 
     private GroovyScalarFn() {}
 
-    public static ScalarFn compile(String script) {
+    /** Backwards-compatible one-arg form. */
+    public static ScalarFn compile(String script) { return compile(script, 1); }
+
+    public static ScalarFn compile(String script, int arity) {
         // Reflect-load Groovy so hitorro-jvssql compiles even when groovy is absent.
         try {
             Class<?> shellCls = Class.forName("groovy.lang.GroovyShell");

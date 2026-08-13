@@ -185,6 +185,17 @@ public final class FunctionRegistry {
             return out;
         });
 
+        putScalar("WIN_STRUCT", args -> {
+            Long ts = numToLong(args[0]);
+            Long size = numToLong(args[1]);
+            if (ts == null || size == null || size <= 0) return null;
+            long start = Math.floorDiv(ts, size) * size;
+            var node = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+            node.put("start", start);
+            node.put("end", start + size);
+            return node;
+        });
+
         putScalar("MLS_LANGS", args -> {
             Object envelope = args[0];
             if (!(envelope instanceof JsonNode env)) return null;

@@ -63,6 +63,23 @@ class UdfTest {
     }
 
     @Test
+    void groovyScalarUdf_endToEnd() throws Exception {
+        var engine = JvsSqlEngine.builder()
+            .registerGroovyFunction("SHOUT", 1, "arg1.toString().toUpperCase() + '!'")
+            .registerGroovyFunction("SUM_LEN", 2, "arg1.toString().length() + arg2.toString().length()")
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"a.pdf\", \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"b.pdf\", \"dept\":\"sales\"}")
+            ), docsType()).build();
+        var rows = run(engine.compile(
+            "SELECT SHOUT(filename) AS loud, SUM_LEN(filename, dept) AS total_len FROM docs"));
+        assertThat(rows).hasSize(2);
+        assertThat(rows.get(0).get("loud").asText()).isEqualTo("A.PDF!");
+        // 'a.pdf' (5) + 'eng' (3) = 8
+        assertThat(rows.get(0).get("total_len").asLong()).isEqualTo(8L);
+    }
+
+    @Test
     void javaScalarUdf_registeredAndCallable() throws Exception {
         var engine = JvsSqlEngine.builder()
             .registerFunction("HASH64", HashFn.class)

@@ -75,6 +75,7 @@ public final class JvsSqlEngine {
     private final FunctionRegistry functions;
     private final Map<String, Class<?>> userJavaScalars;
     private final Map<String, Class<?>> userJavaAggregates;
+    private final Map<String, Integer> userGroovyScalars;   // name → arity
     private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs;
     private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
     private final java.util.concurrent.ScheduledExecutorService refresher;
@@ -82,6 +83,7 @@ public final class JvsSqlEngine {
     private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema, FunctionRegistry functions,
                          Map<String, Class<?>> userJavaScalars,
                          Map<String, Class<?>> userJavaAggregates,
+                         Map<String, Integer> userGroovyScalars,
                          Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs,
                          Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
@@ -89,6 +91,7 @@ public final class JvsSqlEngine {
         this.functions = functions;
         this.userJavaScalars = userJavaScalars;
         this.userJavaAggregates = userJavaAggregates;
+        this.userGroovyScalars = userGroovyScalars;
         this.refSpecs = refSpecs;
         this.lateDataSinks = lateDataSinks;
         // Spin up a small scheduler if any reference table needs periodic refresh.
@@ -188,6 +191,13 @@ public final class JvsSqlEngine {
             jvsSchema.add(e.getKey().toUpperCase(),
                     org.apache.calcite.schema.impl.AggregateFunctionImpl.create(e.getValue()));
         }
+        // Groovy scalars: register a per-arity stub with Calcite so the validator
+        // accepts calls. Runtime dispatch goes through FunctionRegistry.
+        for (var e : userGroovyScalars.entrySet()) {
+            java.lang.reflect.Method stub = com.hitorro.jvssql.udf.GroovyStubs.forArity(e.getValue());
+            jvsSchema.add(e.getKey().toUpperCase(),
+                    org.apache.calcite.schema.impl.ScalarFunctionImpl.create(stub));
+        }
         // TODO Phase 1-late: aggregates + Groovy dispatch via a synthetic Java method
         // signature that the validator can consume.
 
@@ -249,6 +259,7 @@ public final class JvsSqlEngine {
         private final FunctionRegistry functions = new FunctionRegistry();
         private final Map<String, Class<?>> userJavaScalars = new LinkedHashMap<>();
         private final Map<String, Class<?>> userJavaAggregates = new LinkedHashMap<>();
+        private final Map<String, Integer> userGroovyScalars = new LinkedHashMap<>();
         private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs = new LinkedHashMap<>();
         private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
@@ -345,8 +356,19 @@ public final class JvsSqlEngine {
          *
          * <p>Example: {@code .registerGroovyFunction("normalize_email", "arg.toString().toLowerCase().trim()")}</p>
          */
+        /** Groovy scalar UDF with one argument (bound as {@code arg} / {@code arg1}). */
         public Builder registerGroovyFunction(String name, String groovyScript) {
-            functions.putScalar(name, com.hitorro.jvssql.udf.GroovyScalarFn.compile(groovyScript));
+            return registerGroovyFunction(name, 1, groovyScript);
+        }
+
+        /**
+         * Groovy scalar UDF with a given argument count. Args are bound as
+         * {@code arg1..argN} (also {@code arg} for the first). Arity is declared
+         * so Calcite's validator can type-check calls; the return type is ANY.
+         */
+        public Builder registerGroovyFunction(String name, int arity, String groovyScript) {
+            functions.putScalar(name, com.hitorro.jvssql.udf.GroovyScalarFn.compile(groovyScript, arity));
+            userGroovyScalars.put(name, arity);
             return this;
         }
 
@@ -363,7 +385,7 @@ public final class JvsSqlEngine {
 
         public JvsSqlEngine build() {
             return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, userJavaAggregates,
-                    refSpecs, lateDataSinks);
+                    userGroovyScalars, refSpecs, lateDataSinks);
         }
     }
 
