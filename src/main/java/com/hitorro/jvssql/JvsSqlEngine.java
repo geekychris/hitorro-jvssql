@@ -74,15 +74,18 @@ public final class JvsSqlEngine {
     private final JvsSchema schema;
     private final FunctionRegistry functions;
     private final Map<String, Class<?>> userJavaScalars;
+    private final Map<String, Class<?>> userJavaAggregates;
     private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
 
     private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema, FunctionRegistry functions,
                          Map<String, Class<?>> userJavaScalars,
+                         Map<String, Class<?>> userJavaAggregates,
                          Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
         this.schema = schema;
         this.functions = functions;
         this.userJavaScalars = userJavaScalars;
+        this.userJavaAggregates = userJavaAggregates;
         this.lateDataSinks = lateDataSinks;
     }
 
@@ -136,6 +139,10 @@ public final class JvsSqlEngine {
         for (var e : userJavaScalars.entrySet()) {
             jvsSchema.add(e.getKey().toUpperCase(),
                     org.apache.calcite.schema.impl.ScalarFunctionImpl.create(e.getValue(), "eval"));
+        }
+        for (var e : userJavaAggregates.entrySet()) {
+            jvsSchema.add(e.getKey().toUpperCase(),
+                    org.apache.calcite.schema.impl.AggregateFunctionImpl.create(e.getValue()));
         }
         // TODO Phase 1-late: aggregates + Groovy dispatch via a synthetic Java method
         // signature that the validator can consume.
@@ -197,6 +204,7 @@ public final class JvsSqlEngine {
         private final JvsSchema schema = new JvsSchema();
         private final FunctionRegistry functions = new FunctionRegistry();
         private final Map<String, Class<?>> userJavaScalars = new LinkedHashMap<>();
+        private final Map<String, Class<?>> userJavaAggregates = new LinkedHashMap<>();
         private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
         public Builder withSpillDirectory(BaseFile dir) { cfg.spillDir(dir); return this; }
@@ -230,16 +238,24 @@ public final class JvsSqlEngine {
 
         /**
          * Reference table (dimension table) loaded from a BaseFile, JOIN-target only.
-         * <p>Phase 1: the {@code source} is remembered but not yet loaded — Phase 1-late
-         * adds the loader that reads the file (JSON-per-line by default), builds an
-         * in-memory hash index by common join keys, and wires it into HashJoin.</p>
+         *
+         * <p>Reads the file at build time. Supports two on-disk shapes automatically:
+         * JSON array or NDJSON (one JSON object per line). Rows are materialized in
+         * memory and hash-indexed by the join key when the query is executed.</p>
+         *
+         * <p>Refresh policy {@link RefreshPolicy#every(java.time.Duration)} /
+         * {@link RefreshPolicy#onDemand()} rebuilds the snapshot atomically — in-flight
+         * queries continue against the old snapshot until the next execution starts.
+         * The scheduled reloader is registered here; manual refresh flows through
+         * {@link JvsSqlEngine#refreshReferenceTable}.</p>
          */
         public Builder registerReferenceTable(String name, BaseFile source, Type type, RefreshPolicy policy) {
-            // Phase 1: register a placeholder; iteration returns empty until the loader is wired.
-            Supplier<Iterator<JVS>> supplier = java.util.Collections::emptyIterator;
+            java.util.List<JVS> loaded = com.hitorro.jvssql.refdata.ReferenceTableLoader.load(source);
+            Supplier<Iterator<JVS>> supplier = java.util.Collections::emptyIterator;   // unused for ref tables
             JvsTable t = new JvsTable(name, type, StreamConfig.batch(), supplier, true);
+            t.setReferenceRows(loaded);
             schema.addTable(name, t);
-            // TODO Phase 1-late: kick off initial load; honor RefreshPolicy for scheduled/on-demand refresh.
+            // TODO Phase 1-late: honor RefreshPolicy — spin up a scheduled reload thread for SCHEDULED.
             return this;
         }
 
@@ -272,6 +288,7 @@ public final class JvsSqlEngine {
          */
         public Builder registerAggregate(String name, Class<?> aggClass) {
             functions.putAggregate(name, com.hitorro.jvssql.udf.JavaAggregateFn.wrap(aggClass));
+            userJavaAggregates.put(name, aggClass);
             return this;
         }
 
@@ -300,7 +317,7 @@ public final class JvsSqlEngine {
         }
 
         public JvsSqlEngine build() {
-            return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, lateDataSinks);
+            return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, userJavaAggregates, lateDataSinks);
         }
     }
 

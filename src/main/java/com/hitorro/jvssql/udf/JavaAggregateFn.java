@@ -10,13 +10,12 @@ import java.lang.reflect.Method;
 
 /**
  * Wraps a Java class as an {@link AggregateFn}. The class must have three
- * public methods:
+ * public methods (matching Calcite's {@code AggregateFunctionImpl} convention):
  * <ul>
- *   <li>{@code Object createAccumulator()}</li>
- *   <li>{@code void accumulate(Object acc, Object value)}</li>
+ *   <li>{@code Object init()}</li>
+ *   <li>{@code Object add(Object acc, Object value)} — returns the (possibly-new) accumulator</li>
  *   <li>{@code Object result(Object acc)}</li>
  * </ul>
- *
  * <p>Or if it implements {@link AggregateFn} directly, we just instantiate it.</p>
  */
 public final class JavaAggregateFn {
@@ -27,15 +26,19 @@ public final class JavaAggregateFn {
         try {
             Object instance = cls.getDeclaredConstructor().newInstance();
             if (instance instanceof AggregateFn a) return a;
-            Method create = cls.getMethod("createAccumulator");
-            Method accum = findMethod(cls, "accumulate", 2);
+            Method init = cls.getMethod("init");
+            Method add = findMethod(cls, "add", 2);
             Method result = cls.getMethod("result", Object.class);
             return new AggregateFn() {
                 @Override public Object createAccumulator() {
-                    return invoke(create, instance);
+                    return invoke(init, instance);
                 }
                 @Override public void accumulate(Object acc, Object v) {
-                    invoke(accum, instance, acc, v);
+                    // Users may either mutate acc in place (returning it) or return a new one.
+                    // Since our AggregateFn interface holds acc by reference in the executor,
+                    // we can't swap the reference — so require mutate-in-place semantics for
+                    // wrapped classes. Users can wrap immutable acc in a Holder.
+                    invoke(add, instance, acc, v);
                 }
                 @Override public Object result(Object acc) {
                     return invoke(result, instance, acc);

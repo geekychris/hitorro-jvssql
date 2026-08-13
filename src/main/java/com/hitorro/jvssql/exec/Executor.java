@@ -15,6 +15,9 @@ import org.apache.calcite.rel.RelNode;
 import org.apache.calcite.rel.core.Aggregate;
 import org.apache.calcite.rel.core.AggregateCall;
 import org.apache.calcite.rel.core.Filter;
+import org.apache.calcite.rel.core.Join;
+import org.apache.calcite.rel.core.JoinInfo;
+import org.apache.calcite.rel.core.JoinRelType;
 import org.apache.calcite.rel.core.Project;
 import org.apache.calcite.rel.core.Sort;
 import org.apache.calcite.rel.core.TableScan;
@@ -55,11 +58,13 @@ public final class Executor {
 
     private final RelNode plan;
     private final FunctionRegistry functions;
+    private final com.hitorro.jvssql.config.EngineConfig engineConfig;
     private final RexEvaluator rex;
 
-    public Executor(RelNode plan, FunctionRegistry functions) {
+    public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig) {
         this.plan = plan;
         this.functions = functions;
+        this.engineConfig = engineConfig;
         this.rex = new RexEvaluator(functions);
     }
 
@@ -76,6 +81,7 @@ public final class Executor {
         if (node instanceof Aggregate agg)  return buildAggregate(agg);
         if (node instanceof Sort sort)      return buildSort(sort);
         if (node instanceof Values vals)    return buildValues(vals);
+        if (node instanceof Join join)      return buildJoin(join);
         throw new JvsSqlException("Phase 1 does not yet support operator: "
                 + node.getClass().getSimpleName());
     }
@@ -251,52 +257,70 @@ public final class Executor {
         return null;
     }
 
-    private static final class GroupState {
+    private final class GroupState {
         final AggregateFn[] fns;
         final Object[] accs;
         GroupState(List<AggregateCall> calls) {
             fns = new AggregateFn[calls.size()];
             accs = new Object[calls.size()];
             for (int i = 0; i < calls.size(); i++) {
-                fns[i] = builtinAggregate(calls.get(i));
+                fns[i] = aggregateFor(calls.get(i));
                 accs[i] = fns[i].createAccumulator();
             }
         }
     }
 
-    private static AggregateFn builtinAggregate(AggregateCall call) {
-        // Map SqlKind to our AggregateFn. UDAFs will be looked up by name from
-        // the FunctionRegistry once user-registered functions land.
+    /** Resolve an aggregate call: built-in first, then FunctionRegistry (user UDAFs). */
+    private AggregateFn aggregateFor(AggregateCall call) {
         String name = call.getAggregation().getName().toUpperCase();
-        return switch (name) {
+        AggregateFn builtin = switch (name) {
             case "COUNT" -> call.getArgList().isEmpty() ? AggregateOps.countStar() : AggregateOps.count();
             case "SUM", "SUM0" -> AggregateOps.sum();
             case "AVG"   -> AggregateOps.avg();
             case "MIN"   -> AggregateOps.min();
             case "MAX"   -> AggregateOps.max();
-            default -> throw new JvsSqlException("aggregate not yet supported: " + name
-                    + " (UDAF wiring is a Phase 1-late task)");
+            default -> null;
         };
+        if (builtin != null) return builtin;
+        AggregateFn user = functions.getAggregate(name);
+        if (user != null) return user;
+        throw new JvsSqlException("aggregate not registered: " + name);
     }
 
     // -- sort -----------------------------------------------------------------
 
     private Iterator<JsonNode> buildSort(Sort sort) {
         Iterator<JsonNode> upstream = build(sort.getInput());
-        List<JsonNode> buffer = new ArrayList<>();
-        upstream.forEachRemaining(buffer::add);
-
         RelCollation collation = sort.getCollation();
         List<RelFieldCollation> fields = collation.getFieldCollations();
-        if (!fields.isEmpty()) {
-            buffer.sort(sortComparator(fields));
-        }
-
         int offset = sort.offset == null ? 0 : ((org.apache.calcite.rex.RexLiteral) sort.offset).getValueAs(Integer.class);
         int fetch = sort.fetch == null ? Integer.MAX_VALUE : ((org.apache.calcite.rex.RexLiteral) sort.fetch).getValueAs(Integer.class);
-        int from = Math.min(offset, buffer.size());
-        int to = Math.min(from + fetch, buffer.size());
-        return buffer.subList(from, to).iterator();
+
+        // ORDER BY with no fields (rare — pure LIMIT/OFFSET on unordered input) → just paginate.
+        if (fields.isEmpty()) return sliceIterator(upstream, offset, fetch);
+
+        // External-merge sort. Runs stay in memory up to memoryBudgetRows, then spill.
+        // Rough conversion: memoryBudgetMB -> row count via a small per-row assumption.
+        int rowsPerMB = 5_000;
+        int memoryBudgetRows = Math.max(1_000, engineConfig.memoryBudgetMB() * rowsPerMB);
+        Iterator<JsonNode> sorted = ExternalMergeSort.sort(
+                upstream, sortComparator(fields), memoryBudgetRows, engineConfig.spillDir());
+        return sliceIterator(sorted, offset, fetch);
+    }
+
+    private static Iterator<JsonNode> sliceIterator(Iterator<JsonNode> src, int offset, int fetch) {
+        // Advance past the offset.
+        for (int i = 0; i < offset && src.hasNext(); i++) src.next();
+        if (fetch == Integer.MAX_VALUE) return src;
+        return new Iterator<>() {
+            int remaining = fetch;
+            @Override public boolean hasNext() { return remaining > 0 && src.hasNext(); }
+            @Override public JsonNode next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                remaining--;
+                return src.next();
+            }
+        };
     }
 
     private static Comparator<JsonNode> sortComparator(List<RelFieldCollation> fields) {
@@ -319,6 +343,124 @@ public final class Executor {
         if (bNull) return fc.nullDirection == RelFieldCollation.NullDirection.LAST ? -1 : 1;
         if (a.isNumber() && b.isNumber()) return a.decimalValue().compareTo(b.decimalValue());
         return a.asText().compareTo(b.asText());
+    }
+
+    // -- hash join ------------------------------------------------------------
+    //
+    // Phase 1 supports INNER and LEFT equijoins between a streaming left side and
+    // a fully-materialized right side. We materialize the right side into a HashMap
+    // keyed by the composite join-key tuple, then iterate the left side probing
+    // that map. The right side is typically a reference-table scan; anything else
+    // is legal too (Sort/Filter/Project on top of a scan) but the whole right
+    // subtree is drained into memory at the start of iteration.
+
+    private Iterator<JsonNode> buildJoin(Join join) {
+        JoinRelType joinType = join.getJoinType();
+        if (joinType != JoinRelType.INNER && joinType != JoinRelType.LEFT) {
+            throw new JvsSqlException("Phase 1 supports INNER and LEFT joins only; got " + joinType);
+        }
+        JoinInfo info = join.analyzeCondition();
+        if (info.leftKeys.isEmpty() || info.rightKeys.isEmpty() || !info.isEqui()) {
+            throw new JvsSqlException("Phase 1 supports equijoins only. Condition was: " + join.getCondition());
+        }
+
+        // Build side: fully drain the right input into a hash-index by right-key tuple.
+        Iterator<JsonNode> rightIt = build(join.getRight());
+        int leftFieldCount = join.getLeft().getRowType().getFieldCount();
+        int rightFieldCount = join.getRight().getRowType().getFieldCount();
+        List<String> outNames = join.getRowType().getFieldNames();
+
+        java.util.Map<List<JsonNode>, List<JsonNode>> hash = new java.util.HashMap<>();
+        int[] rightKeyCols = info.rightKeys.stream().mapToInt(Integer::intValue).toArray();
+        while (rightIt.hasNext()) {
+            JsonNode rightRow = rightIt.next();
+            List<JsonNode> key = keyTuple(rightRow, rightKeyCols);
+            hash.computeIfAbsent(key, k -> new java.util.ArrayList<>()).add(rightRow);
+        }
+
+        // Probe side: iterate left, look up matches.
+        Iterator<JsonNode> leftIt = build(join.getLeft());
+        int[] leftKeyCols = info.leftKeys.stream().mapToInt(Integer::intValue).toArray();
+        return new HashJoinIterator(leftIt, hash, leftKeyCols, leftFieldCount, rightFieldCount,
+                outNames, joinType == JoinRelType.LEFT);
+    }
+
+    private static List<JsonNode> keyTuple(JsonNode row, int[] keyCols) {
+        List<JsonNode> key = new java.util.ArrayList<>(keyCols.length);
+        for (int c : keyCols) key.add(nthField(row, c));
+        return key;
+    }
+
+    private static final class HashJoinIterator implements Iterator<JsonNode> {
+        private final Iterator<JsonNode> left;
+        private final java.util.Map<List<JsonNode>, List<JsonNode>> hash;
+        private final int[] leftKeyCols;
+        private final int leftFieldCount;
+        private final int rightFieldCount;
+        private final List<String> outNames;
+        private final boolean isLeftJoin;
+        private JsonNode nextOut;
+        private JsonNode pendingLeft;
+        private Iterator<JsonNode> pendingRightMatches;
+
+        HashJoinIterator(Iterator<JsonNode> left,
+                         java.util.Map<List<JsonNode>, List<JsonNode>> hash,
+                         int[] leftKeyCols, int leftFieldCount, int rightFieldCount,
+                         List<String> outNames, boolean isLeftJoin) {
+            this.left = left; this.hash = hash;
+            this.leftKeyCols = leftKeyCols;
+            this.leftFieldCount = leftFieldCount;
+            this.rightFieldCount = rightFieldCount;
+            this.outNames = outNames;
+            this.isLeftJoin = isLeftJoin;
+        }
+
+        @Override public boolean hasNext() {
+            while (nextOut == null) {
+                // Continue emitting a still-open cross-product of the current left row.
+                if (pendingRightMatches != null && pendingRightMatches.hasNext()) {
+                    nextOut = combine(pendingLeft, pendingRightMatches.next());
+                    return true;
+                }
+                pendingRightMatches = null;
+                if (!left.hasNext()) return false;
+                JsonNode leftRow = left.next();
+                List<JsonNode> key = keyTuple(leftRow, leftKeyCols);
+                List<JsonNode> matches = hash.get(key);
+                if (matches == null || matches.isEmpty()) {
+                    if (isLeftJoin) {
+                        // LEFT JOIN preserves the left row with NULLs on the right side.
+                        nextOut = combine(leftRow, null);
+                        return true;
+                    }
+                    continue;   // INNER: skip
+                }
+                pendingLeft = leftRow;
+                pendingRightMatches = matches.iterator();
+            }
+            return true;
+        }
+
+        @Override public JsonNode next() {
+            if (!hasNext()) throw new NoSuchElementException();
+            JsonNode out = nextOut; nextOut = null; return out;
+        }
+
+        private JsonNode combine(JsonNode leftRow, JsonNode rightRow) {
+            ObjectNode out = F.objectNode();
+            // Left fields first, then right — matches Calcite's join row type.
+            int lf = leftFieldCount;
+            int rf = rightFieldCount;
+            for (int i = 0; i < lf; i++) {
+                JsonNode v = nthField(leftRow, i);
+                out.set(outNames.get(i), v == null ? F.nullNode() : v);
+            }
+            for (int j = 0; j < rf; j++) {
+                JsonNode v = rightRow == null ? F.nullNode() : nthField(rightRow, j);
+                out.set(outNames.get(lf + j), v == null ? F.nullNode() : v);
+            }
+            return out;
+        }
     }
 
     // -- values ---------------------------------------------------------------

@@ -241,6 +241,9 @@ mvn -pl hitorro-jvssql exec:java \
 | 05 | `Example05_DynamicAndMls` | `JPATH('path')` for undeclared fields; `MLS(field, 'lang')` |
 | 06 | `Example06_JavaUdf`       | Register a Java class as a scalar SQL function |
 | 07 | `Example07_PushToSink`    | Push results to a `Sink<JsonNode>` instead of pulling |
+| 08 | `Example08_ReferenceJoin` | Stream × reference-table INNER + LEFT joins (dimension enrichment) |
+| 09 | `Example09_ExternalSort`  | ORDER BY with spill-to-disk when the buffer overflows |
+| 10 | `Example10_UserAggregate` | Register a Java UDAF (init/add/result) and use it in GROUP BY |
 
 ## Testing
 

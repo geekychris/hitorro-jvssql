@@ -27,16 +27,39 @@ class UdfTest {
         }
     }
 
-    /** Public UDAF class following the shape JavaAggregateFn expects. */
-    public static class ConcatFn {
-        public Object createAccumulator() { return new StringBuilder(); }
-        public void accumulate(Object acc, Object v) {
-            if (v == null) return;
-            StringBuilder sb = (StringBuilder) acc;
+    /**
+     * Public UDAF class. Uses Calcite's init/add/result convention. Note:
+     * accumulator must be a mutable holder so add() can update it in place;
+     * the wrapper doesn't observe the return value of add().
+     */
+    public static class StringConcatFn {
+        public Object init() { return new StringBuilder(); }
+        public Object add(Object accBox, Object v) {
+            if (v == null) return accBox;
+            StringBuilder sb = (StringBuilder) accBox;
             if (sb.length() > 0) sb.append(",");
             sb.append(v);
+            return sb;
         }
         public Object result(Object acc) { return acc.toString(); }
+    }
+
+    @Test
+    void javaAggregateUdf_worksInGroupBy() throws Exception {
+        var engine = JvsSqlEngine.builder()
+            .registerAggregate("STR_CONCAT", StringConcatFn.class)
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"a.pdf\", \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"b.pdf\", \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"c.pdf\", \"dept\":\"sales\"}")
+            ), docsType()).build();
+        var rows = run(engine.compile(
+            "SELECT dept, STR_CONCAT(filename) AS files FROM docs GROUP BY dept"));
+        assertThat(rows).hasSize(2);
+        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asText())).findFirst().orElseThrow();
+        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asText())).findFirst().orElseThrow();
+        assertThat(eng.get("files").asText()).isIn("a.pdf,b.pdf", "b.pdf,a.pdf");
+        assertThat(sales.get("files").asText()).isEqualTo("c.pdf");
     }
 
     @Test

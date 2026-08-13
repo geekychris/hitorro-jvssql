@@ -34,6 +34,8 @@ public final class JvsTable extends AbstractTable {
     private final StreamConfig streamConfig;
     private final Supplier<Iterator<JVS>> source;
     private final boolean isReferenceTable;
+    /** Materialized rows for reference tables — supports re-iteration across query executions. */
+    private volatile java.util.List<JVS> referenceRows;
 
     public JvsTable(String name, Type jvsType, StreamConfig streamConfig,
                     Supplier<Iterator<JVS>> source, boolean isReferenceTable) {
@@ -49,8 +51,20 @@ public final class JvsTable extends AbstractTable {
     public StreamConfig streamConfig() { return streamConfig; }
     public boolean isReferenceTable() { return isReferenceTable; }
 
-    /** Fresh iterator from the source. Called once per query execution. */
-    public Iterator<JVS> openIterator() { return source.get(); }
+    /** Direct access to the materialized rows of a reference table (for HashJoin build phase). */
+    public java.util.List<JVS> referenceRows() { return referenceRows; }
+
+    /** Called at engine build time for reference tables — swaps in the loaded snapshot atomically. */
+    public void setReferenceRows(java.util.List<JVS> rows) { this.referenceRows = rows; }
+
+    /**
+     * Fresh iterator from the source. Reference tables re-iterate their loaded snapshot
+     * on every call; streaming sources consume the underlying supplier once.
+     */
+    public Iterator<JVS> openIterator() {
+        if (isReferenceTable && referenceRows != null) return referenceRows.iterator();
+        return source.get();
+    }
 
     @Override
     public RelDataType getRowType(RelDataTypeFactory typeFactory) {
