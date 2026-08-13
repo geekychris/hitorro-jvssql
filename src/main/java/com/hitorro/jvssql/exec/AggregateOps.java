@@ -82,6 +82,31 @@ public final class AggregateOps {
         };
     }
 
+    /**
+     * Wrap any aggregate with per-group DISTINCT semantics. The wrapper holds
+     * a HashSet of previously-seen argument values and only forwards a value
+     * to the underlying aggregate the first time it appears in the group.
+     */
+    public static AggregateFn distinctOf(AggregateFn inner) {
+        return new AggregateFn() {
+            @Override public Object createAccumulator() { return new DistinctAcc(inner); }
+            @Override public void accumulate(Object accBox, Object value) {
+                DistinctAcc d = (DistinctAcc) accBox;
+                if (value == null) return;
+                if (d.seen.add(value)) inner.accumulate(d.inner, value);
+            }
+            @Override public Object result(Object accBox) {
+                return inner.result(((DistinctAcc) accBox).inner);
+            }
+        };
+    }
+
+    private static final class DistinctAcc {
+        final java.util.HashSet<Object> seen = new java.util.HashSet<>();
+        final Object inner;
+        DistinctAcc(AggregateFn innerFn) { this.inner = innerFn.createAccumulator(); }
+    }
+
     public static AggregateFn max() {
         return new AggregateFn() {
             @Override public Object createAccumulator() { return new Object[]{null}; }

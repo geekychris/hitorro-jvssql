@@ -26,6 +26,7 @@ public final class PreparedQuery {
     private final JvsSqlEngine engine;
     private final String sql;
     private final RelNode plan;
+    private final java.util.Map<Integer, Object> paramBindings = new java.util.LinkedHashMap<>();
 
     PreparedQuery(JvsSqlEngine engine, String sql, RelNode plan) {
         this.engine = engine;
@@ -33,11 +34,33 @@ public final class PreparedQuery {
         this.plan = plan;
     }
 
+    /**
+     * Bind a value to the {@code ?}-marked parameter at {@code position} (1-based, JDBC-style).
+     * Bindings apply to subsequent {@link #asIterator()} / {@link #execute(Sink)} calls.
+     * Returns {@code this} for chaining.
+     */
+    public PreparedQuery bind(int position, Object value) {
+        if (position < 1) throw new JvsSqlException("parameter positions are 1-based");
+        paramBindings.put(position - 1, value);
+        return this;
+    }
+
+    /** Clear all bound parameters. */
+    public PreparedQuery clearBindings() { paramBindings.clear(); return this; }
+
     public String sql() { return sql; }
+
+    /** Return the physical plan as a pretty-printed string (Calcite's RelOptUtil format). */
+    public String explain() {
+        return org.apache.calcite.plan.RelOptUtil.toString(plan);
+    }
+
+    /** Access the underlying Calcite RelNode plan — useful for tests / debugging tooling. */
+    public org.apache.calcite.rel.RelNode plan() { return plan; }
 
     /** Pull results one at a time. Backpressure = natural: the engine stalls when the consumer is slow. */
     public AbstractIterator<JsonNode> asIterator() {
-        Iterator<JsonNode> raw = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks()).execute();
+        Iterator<JsonNode> raw = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks(), paramBindings).execute();
         return new IteratorAdapter(raw);
     }
 
@@ -49,7 +72,7 @@ public final class PreparedQuery {
         try {
             sink.init(JsonNodeFactory.instance.objectNode());
             sink.start();
-            Iterator<JsonNode> it = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks()).execute();
+            Iterator<JsonNode> it = new Executor(plan, engine.functions(), engine.config(), engine.lateDataSinks(), paramBindings).execute();
             while (it.hasNext()) {
                 sink.accept(it.next());
             }

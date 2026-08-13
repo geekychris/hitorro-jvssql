@@ -47,9 +47,15 @@ import java.util.regex.Pattern;
 public final class RexEvaluator {
 
     private final FunctionRegistry functions;
+    private final java.util.Map<Integer, Object> paramBindings;
 
     public RexEvaluator(FunctionRegistry functions) {
+        this(functions, java.util.Map.of());
+    }
+
+    public RexEvaluator(FunctionRegistry functions, java.util.Map<Integer, Object> paramBindings) {
         this.functions = functions;
+        this.paramBindings = paramBindings == null ? java.util.Map.of() : paramBindings;
     }
 
     private static final JsonNodeFactory F = JsonNodeFactory.instance;
@@ -70,6 +76,11 @@ public final class RexEvaluator {
         }
         if (node instanceof RexCall call) {
             return evalCall(call, row);
+        }
+        if (node instanceof org.apache.calcite.rex.RexDynamicParam dp) {
+            // Resolve ?-parameter binding set via PreparedQuery.bind(pos, value).
+            Object v = paramBindings.get(dp.getIndex());
+            return wrap(v);
         }
         throw new JvsSqlException("unsupported RexNode: " + node.getKind() + " (" + node.getClass().getSimpleName() + ")");
     }

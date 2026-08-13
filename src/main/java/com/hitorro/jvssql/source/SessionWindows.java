@@ -141,6 +141,96 @@ public final class SessionWindows {
 
     private record Row(long ts, JVS jvs) {}
 
+    /**
+     * Incremental sessionization: emits closed sessions as soon as the observed
+     * event-time watermark passes {@code last_seen_ts_for_this_key + gap}. Memory
+     * is O(open sessions across all keys), not O(input rows). Requires input to
+     * be roughly in-order — heavily out-of-order inputs should use
+     * {@link #sessionize} instead.
+     *
+     * <p>Each closed session emits its buffered rows augmented with
+     * {@code session_start} and {@code session_end}, preserving original row
+     * order within the session.</p>
+     */
+    public static Iterator<JVS> sessionizeIncremental(Iterator<JVS> source, String keyPath, String timePath, long gapMillis) {
+        Propaccess keyP = new Propaccess(keyPath);
+        Propaccess timeP = new Propaccess(timePath);
+        return new Iterator<>() {
+            // Per-key open session state: rows buffered so far, session_start, latest_ts.
+            final Map<String, OpenSession> open = new HashMap<>();
+            final java.util.ArrayDeque<JVS> emitQueue = new java.util.ArrayDeque<>();
+            long maxObserved = Long.MIN_VALUE;
+            boolean sourceExhausted = false;
+
+            @Override public boolean hasNext() {
+                while (emitQueue.isEmpty()) {
+                    if (!sourceExhausted && source.hasNext()) {
+                        JVS jvs = source.next();
+                        String k = extractString(jvs, keyP);
+                        long ts = extractLong(jvs, timeP);
+                        maxObserved = Math.max(maxObserved, ts);
+                        OpenSession sess = open.get(k);
+                        if (sess == null) {
+                            open.put(k, new OpenSession(ts, ts, jvs));
+                        } else if (ts - sess.latestTs > gapMillis) {
+                            emitClosed(k, sess);
+                            open.put(k, new OpenSession(ts, ts, jvs));
+                        } else {
+                            sess.latestTs = ts;
+                            sess.rows.add(jvs);
+                        }
+                        // Sweep other keys' sessions that have gone stale since we advanced the watermark.
+                        java.util.Iterator<Map.Entry<String, OpenSession>> it = open.entrySet().iterator();
+                        while (it.hasNext()) {
+                            var e = it.next();
+                            if (maxObserved - e.getValue().latestTs > gapMillis && !k.equals(e.getKey())) {
+                                emitClosed(e.getKey(), e.getValue());
+                                it.remove();
+                            }
+                        }
+                    } else if (!sourceExhausted) {
+                        sourceExhausted = true;
+                    } else if (!open.isEmpty()) {
+                        // Flush all remaining open sessions.
+                        for (var e : open.entrySet()) emitClosed(e.getKey(), e.getValue());
+                        open.clear();
+                    } else {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            @Override public JVS next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return emitQueue.poll();
+            }
+
+            private void emitClosed(String key, OpenSession sess) {
+                for (JVS r : sess.rows) {
+                    JsonNode orig = r.getJsonNode();
+                    ObjectNode augmented = orig.isObject()
+                            ? ((ObjectNode) orig.deepCopy())
+                            : F.objectNode().set("_", orig);
+                    augmented.put("session_start", sess.startTs);
+                    augmented.put("session_end",   sess.latestTs);
+                    emitQueue.add(new JVS(augmented));
+                }
+            }
+        };
+    }
+
+    private static final class OpenSession {
+        long startTs;
+        long latestTs;
+        final List<JVS> rows = new ArrayList<>();
+        OpenSession(long startTs, long latestTs, JVS first) {
+            this.startTs = startTs;
+            this.latestTs = latestTs;
+            rows.add(first);
+        }
+    }
+
     /** Convenience: adds a nested {@code {"session":{"start":..., "end":...}}} object
      *  instead of flat {@code session_start} / {@code session_end} columns. */
     public static Iterator<JVS> sessionizeNested(Iterator<JVS> source, String keyPath, String timePath, long gapMillis) {

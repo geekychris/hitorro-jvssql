@@ -100,6 +100,32 @@ class SessionWindowsTest {
     }
 
     @Test
+    void sessionizeIncremental_emitsClosedSessions() throws Exception {
+        // Two users. A's first session (t=0..10s) closes when t=45s (>30s gap) arrives.
+        // B's single-event session stays open until end-of-input flush.
+        var events = List.of(
+            row(0,      "A", 1),
+            row(10_000, "A", 2),
+            row(45_000, "A", 3),  // triggers close of A's [0..10] session
+            row(50_000, "B", 10)  // observed at same time; won't close A's [45..45] session
+        ).iterator();
+
+        var sessioned = SessionWindows.sessionizeIncremental(events, "user", "event_time", 30_000);
+        var engine = JvsSqlEngine.builder()
+            .registerStream("s", sessioned, sessionedType()).build();
+        var rows = run(engine.compile(
+            "SELECT \"user\", session_start, session_end, COUNT(*) AS n "
+          + "FROM s GROUP BY \"user\", session_start, session_end "
+          + "ORDER BY \"user\", session_start"));
+        // Expected: A [0..10] n=2, A [45..45] n=1, B [50..50] n=1
+        assertThat(rows).hasSize(3);
+        assertThat(rows.get(0).get("session_end").asLong()).isEqualTo(10_000L);
+        assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
+        assertThat(rows.get(1).get("session_start").asLong()).isEqualTo(45_000L);
+        assertThat(rows.get(2).get("user").asText()).isEqualTo("B");
+    }
+
+    @Test
     void sessionizeNested_producesNestedSessionObject() throws Exception {
         var events = List.of(
             row(0, "A", 1),

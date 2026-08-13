@@ -66,11 +66,17 @@ public final class Executor {
 
     public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig,
                     java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks) {
+        this(plan, functions, engineConfig, lateDataSinks, java.util.Map.of());
+    }
+
+    public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig,
+                    java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks,
+                    java.util.Map<Integer, Object> paramBindings) {
         this.plan = plan;
         this.functions = functions;
         this.engineConfig = engineConfig;
         this.lateDataSinks = lateDataSinks == null ? java.util.Map.of() : lateDataSinks;
-        this.rex = new RexEvaluator(functions);
+        this.rex = new RexEvaluator(functions, paramBindings == null ? java.util.Map.of() : paramBindings);
     }
 
     public Iterator<JsonNode> execute() {
@@ -87,8 +93,56 @@ public final class Executor {
         if (node instanceof Sort sort)      return buildSort(sort);
         if (node instanceof Values vals)    return buildValues(vals);
         if (node instanceof Join join)      return buildJoin(join);
+        if (node instanceof org.apache.calcite.rel.core.Union u)     return buildUnion(u);
+        if (node instanceof org.apache.calcite.rel.core.Intersect i) return buildSetOp(i, false);
+        if (node instanceof org.apache.calcite.rel.core.Minus m)     return buildSetOp(m, true);
         throw new JvsSqlException("Phase 1 does not yet support operator: "
                 + node.getClass().getSimpleName());
+    }
+
+    // -- set operations -------------------------------------------------------
+
+    private Iterator<JsonNode> buildUnion(org.apache.calcite.rel.core.Union union) {
+        // UNION ALL: concat all inputs. UNION (all=false): concat + dedup.
+        java.util.List<Iterator<JsonNode>> parts = new java.util.ArrayList<>();
+        for (RelNode child : union.getInputs()) parts.add(build(child));
+        Iterator<JsonNode> concat = new Iterator<>() {
+            int idx = 0;
+            @Override public boolean hasNext() {
+                while (idx < parts.size() && !parts.get(idx).hasNext()) idx++;
+                return idx < parts.size();
+            }
+            @Override public JsonNode next() {
+                if (!hasNext()) throw new NoSuchElementException();
+                return parts.get(idx).next();
+            }
+        };
+        if (union.all) return concat;
+        // UNION (dedup): materialize into a LinkedHashSet keyed by textual repr.
+        java.util.LinkedHashMap<String, JsonNode> seen = new java.util.LinkedHashMap<>();
+        while (concat.hasNext()) {
+            JsonNode row = concat.next();
+            seen.putIfAbsent(row.toString(), row);
+        }
+        return seen.values().iterator();
+    }
+
+    private Iterator<JsonNode> buildSetOp(org.apache.calcite.rel.core.SetOp op, boolean isMinus) {
+        // INTERSECT / EXCEPT (ALL variants dedup ratios differ; we implement set semantics).
+        java.util.LinkedHashMap<String, JsonNode> left = new java.util.LinkedHashMap<>();
+        Iterator<JsonNode> l = build(op.getInputs().get(0));
+        while (l.hasNext()) { JsonNode r = l.next(); left.putIfAbsent(r.toString(), r); }
+        for (int i = 1; i < op.getInputs().size(); i++) {
+            java.util.HashSet<String> rightKeys = new java.util.HashSet<>();
+            Iterator<JsonNode> r = build(op.getInputs().get(i));
+            while (r.hasNext()) rightKeys.add(r.next().toString());
+            if (isMinus) {
+                left.keySet().removeAll(rightKeys);   // EXCEPT: drop rows also in right
+            } else {
+                left.keySet().retainAll(rightKeys);   // INTERSECT: keep only shared
+            }
+        }
+        return left.values().iterator();
     }
 
     // -- scan -----------------------------------------------------------------
@@ -315,15 +369,9 @@ public final class Executor {
 
     private Object extractAggArg(AggregateCall ac, JsonNode row, List<String> inputNames) {
         // COUNT(*) has no arg → passes a non-null sentinel so count() increments.
+        // DISTINCT semantics are handled by AggregateOps.distinctOf wrapper in aggregateFor.
         List<Integer> argList = ac.getArgList();
-        if (ac.isDistinct()) {
-            // Phase-1-late: DISTINCT aggregation. Fold via unique-key set per group.
-            throw new JvsSqlException("COUNT(DISTINCT ...) not yet supported in Phase 1");
-        }
-        if (argList.isEmpty()) {
-            // COUNT(*)
-            return Boolean.TRUE;
-        }
+        if (argList.isEmpty()) return Boolean.TRUE;
         int col = argList.get(0);
         JsonNode v = nthField(row, col);
         return RexEvaluator.unwrap(v);
@@ -402,21 +450,20 @@ public final class Executor {
         return null;
     }
 
-    /** Resolve an aggregate call: built-in first, then FunctionRegistry (user UDAFs). */
+    /** Resolve an aggregate call: built-in first, then FunctionRegistry (user UDAFs).
+     *  Wraps in {@link AggregateOps#distinctOf} when the call is DISTINCT. */
     private AggregateFn aggregateFor(AggregateCall call) {
         String name = call.getAggregation().getName().toUpperCase();
-        AggregateFn builtin = switch (name) {
+        AggregateFn base = switch (name) {
             case "COUNT" -> call.getArgList().isEmpty() ? AggregateOps.countStar() : AggregateOps.count();
             case "SUM", "SUM0" -> AggregateOps.sum();
             case "AVG"   -> AggregateOps.avg();
             case "MIN"   -> AggregateOps.min();
             case "MAX"   -> AggregateOps.max();
-            default -> null;
+            default -> functions.getAggregate(name);
         };
-        if (builtin != null) return builtin;
-        AggregateFn user = functions.getAggregate(name);
-        if (user != null) return user;
-        throw new JvsSqlException("aggregate not registered: " + name);
+        if (base == null) throw new JvsSqlException("aggregate not registered: " + name);
+        return call.isDistinct() ? AggregateOps.distinctOf(base) : base;
     }
 
     // -- sort -----------------------------------------------------------------
