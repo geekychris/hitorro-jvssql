@@ -119,12 +119,15 @@ public final class FunctionRegistry {
         // JVS-specific
         putScalar("JPATH", args -> {
             // Reads a JVS dotted path from the currently-bound row.
+            // NeverCreate: JPATH is used both as an explicit escape hatch and as
+            // the target of the parse-tree rewrite (JpathRewriter). Neither should
+            // ever mutate the source row — see the design note in RowProjector.read().
             String path = str(args[0]);
             JVS row = currentRow();
             if (row == null || path == null) return null;
             try {
                 Propaccess p = new Propaccess(path);
-                JsonNode v = p.get(row, row.getJsonNode(), PAContext.AlwaysCreate);
+                JsonNode v = p.get(row, row.getJsonNode(), PAContext.NeverCreate);
                 if (v == null || v.isNull()) return null;
                 return RexEvaluator.unwrap(v);
             } catch (Exception e) {

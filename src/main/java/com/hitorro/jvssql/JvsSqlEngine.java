@@ -230,6 +230,11 @@ public final class JvsSqlEngine {
         SqlParser parser = SqlParser.create(sql, parserCfg);
         SqlNode sqlNode = parser.parseQuery();
 
+        // Transparent dotted-path support: rewrite multi-part identifiers such as
+        // metadata.exp into JPATH('metadata.exp') calls before validation. See
+        // JpathRewriter for the design rationale and known limits.
+        sqlNode = JpathRewriter.rewrite(sqlNode);
+
         // Chain the standard SQL operators with our own catalog reader — the reader
         // exposes schema-registered functions (JPATH, MLS, user UDFs) to the validator.
         org.apache.calcite.sql.SqlOperatorTable opTable =

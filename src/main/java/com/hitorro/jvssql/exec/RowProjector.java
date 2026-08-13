@@ -27,12 +27,20 @@ public final class RowProjector {
 
     /**
      * Read one column value from a JVS doc as a raw {@link JsonNode}, or {@code null}
-     * if absent. Uses {@link Propaccess#get} to navigate top-level and dotted paths.
+     * if absent. Uses {@link Propaccess#get} with
+     * {@link PAContext#NeverCreate} — reads must never mutate the input row.
+     *
+     * <p><b>Design decision:</b> earlier code passed {@link PAContext#AlwaysCreate},
+     * which caused Propaccess to auto-create missing intermediate objects/arrays as
+     * a side effect of a plain read. That was invisible in most tests (the returned
+     * value is the same) but corrupts the source JVS for anyone else holding a
+     * reference — including a caching iterator upstream. If the executor ever needs
+     * write-through semantics, do it in an explicit setter, not here.</p>
      */
     public JsonNode read(JVS row, String columnName) {
         try {
             Propaccess p = new Propaccess(columnName);
-            return p.get(row, row.getJsonNode(), PAContext.AlwaysCreate);
+            return p.get(row, row.getJsonNode(), PAContext.NeverCreate);
         } catch (Exception e) {
             return null;
         }
