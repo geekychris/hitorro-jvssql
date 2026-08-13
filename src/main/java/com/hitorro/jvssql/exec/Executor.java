@@ -61,6 +61,8 @@ public final class Executor {
     private final com.hitorro.jvssql.config.EngineConfig engineConfig;
     private final java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks;
     private final RexEvaluator rex;
+    /** Per-execution watermark state; updated by WatermarkFilter, read by StreamingAggregate. */
+    private final WatermarkTracker watermarkTracker = new WatermarkTracker();
 
     public Executor(RelNode plan, FunctionRegistry functions, com.hitorro.jvssql.config.EngineConfig engineConfig,
                     java.util.Map<String, com.hitorro.util.core.iterator.sinks.Sink<JsonNode>> lateDataSinks) {
@@ -105,7 +107,8 @@ public final class Executor {
         var sc = table.streamConfig();
         if (sc != null && sc.isStreaming()) {
             com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink = lateDataSinks.get(table.getName());
-            src = new WatermarkFilter(src, sc.eventTimeField(), sc.allowedLatenessMillis(), lateSink);
+            src = new WatermarkFilter(src, sc.eventTimeField(), sc.allowedLatenessMillis(),
+                                       lateSink, watermarkTracker);
         }
         return new ScanIterator(src, projector, functions);
     }
@@ -120,13 +123,17 @@ public final class Executor {
         private final com.hitorro.util.json.keys.propaccess.Propaccess eventTimePath;
         private final long allowedLatenessMillis;
         private final com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink;
+        private final WatermarkTracker tracker;
         private long maxObservedEventTime = Long.MIN_VALUE;
         private JVS nextRow;
-        WatermarkFilter(Iterator<JVS> upstream, String eventTimeField, long allowedLatenessMillis, com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink) {
+        WatermarkFilter(Iterator<JVS> upstream, String eventTimeField, long allowedLatenessMillis,
+                        com.hitorro.util.core.iterator.sinks.Sink<JsonNode> lateSink,
+                        WatermarkTracker tracker) {
             this.upstream = upstream;
             this.eventTimePath = new com.hitorro.util.json.keys.propaccess.Propaccess(eventTimeField);
             this.allowedLatenessMillis = allowedLatenessMillis;
             this.lateSink = lateSink;
+            this.tracker = tracker;
         }
         @Override public boolean hasNext() {
             while (nextRow == null && upstream.hasNext()) {
@@ -142,6 +149,7 @@ public final class Executor {
                     continue;
                 }
                 maxObservedEventTime = Math.max(maxObservedEventTime, ts);
+                tracker.observe(ts);
                 nextRow = candidate;
             }
             return nextRow != null;
@@ -261,7 +269,7 @@ public final class Executor {
         if (hint != null) {
             return new StreamingAggregate(
                     upstream, groupCols, hint.groupIdx, hint.windowSize, hint.allowedLateness,
-                    aggCalls, outNames, this::aggregateFor);
+                    aggCalls, outNames, this::aggregateFor, watermarkTracker);
         }
 
         // Bucketize by group-key tuple.

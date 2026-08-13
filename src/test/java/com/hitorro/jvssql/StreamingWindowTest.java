@@ -197,6 +197,54 @@ class StreamingWindowTest {
     }
 
     @Test
+    void streamingAggregate_usesTightRawEventTimeWatermark() throws Exception {
+        // Setup: window size = 1 minute, allowedLateness = 0.
+        // Events within the SAME window arrive in order at t=0, 30s.
+        // A third event at t=65s is in the NEXT window — but importantly, at that
+        // point maxObservedEventTime = 65s, which is > (window_end 60s + lateness 0).
+        // The hour-0 window should therefore close AFTER the 3rd event is read but
+        // BEFORE the source is exhausted.
+        //
+        // With the old approximation (watermark ≈ maxObservedWindowStart) we needed
+        // TWO later-window events to trigger closure of window 0. With the raw
+        // event-time watermark, ONE later-window event is enough.
+        var events = new java.util.ArrayList<JVS>();
+        events.add(ev(0,       "eng", 100));
+        events.add(ev(30_000,  "eng", 200));
+        events.add(ev(65_000,  "sales", 500));   // ← this alone closes window 0
+
+        var engine = JvsSqlEngine.builder()
+            .registerStream("events", events.iterator(), eventsType(),
+                    com.hitorro.jvssql.config.StreamConfig.builder()
+                        .eventTimeField("event_time")
+                        .allowedLatenessMillis(0)
+                        .build())
+            .build();
+
+        long minute = 60_000L;
+        var it = engine.compile(
+            "SELECT WIN_START(event_time, " + minute + ") AS window_start, "
+          + "       dept, COUNT(*) AS n "
+          + "FROM   events "
+          + "GROUP BY WIN_START(event_time, " + minute + "), dept").asIterator();
+
+        // Pull one row; without the raw-event-time watermark, the operator would
+        // still be holding window 0 open and would want another row from the
+        // source before emitting. With the tight watermark, we get window 0
+        // right after the third event arrived.
+        assertThat(it.hasNext()).isTrue();
+        JsonNode first = it.next();
+        assertThat(first.get("window_start").asLong()).isEqualTo(0L);
+        assertThat(first.get("dept").asText()).isEqualTo("eng");
+        assertThat(first.get("n").asLong()).isEqualTo(2L);
+        // Second and third rows: window 1's single sales event, flushed at EOF.
+        assertThat(it.hasNext()).isTrue();
+        JsonNode second = it.next();
+        assertThat(second.get("window_start").asLong()).isEqualTo(minute);
+        assertThat(second.get("dept").asText()).isEqualTo("sales");
+    }
+
+    @Test
     void hopStarts_producesMultipleWindowsPerRow() throws Exception {
         // HOP(size=60s, slide=20s): each event belongs to (size/slide) = 3 concurrent windows.
         var engine = JvsSqlEngine.builder()

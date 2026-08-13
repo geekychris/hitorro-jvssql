@@ -59,6 +59,7 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
     private final Function<AggregateCall, AggregateFn> aggResolver;
     private final List<AggregateCall> aggCalls;
     private final List<String> outNames;
+    private final WatermarkTracker watermarkTracker;
 
     /** window_start -> (group_key -> state). Sorted so we can find closable windows in O(log n). */
     private final NavigableMap<Long, Map<List<JsonNode>, GroupState>> perWindow = new TreeMap<>();
@@ -73,7 +74,8 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
                               long allowedLateness,
                               List<AggregateCall> aggCalls,
                               List<String> outNames,
-                              Function<AggregateCall, AggregateFn> aggResolver) {
+                              Function<AggregateCall, AggregateFn> aggResolver,
+                              WatermarkTracker watermarkTracker) {
         this.upstream = upstream;
         this.groupCols = groupCols;
         this.windowStartGroupIdx = windowStartGroupIdx;
@@ -82,6 +84,7 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
         this.aggCalls = aggCalls;
         this.outNames = outNames;
         this.aggResolver = aggResolver;
+        this.watermarkTracker = watermarkTracker;
     }
 
     @Override public boolean hasNext() {
@@ -132,11 +135,25 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
     }
 
     private void closeReadyWindows() {
-        if (maxObservedWindowStart == Long.MIN_VALUE) return;
-        // A window at ws is closable when ws + windowSize + allowedLateness ≤ maxObservedWindowStart.
-        // Equivalently ws ≤ maxObservedWindowStart - windowSize - allowedLateness.
-        long cutoff = maxObservedWindowStart - windowSize - allowedLateness;
-        var it = perWindow.headMap(cutoff, true).entrySet().iterator();
+        // Prefer the raw event-time watermark from the scan: it's the tightest
+        // possible closure signal — a window is closable as soon as event_time
+        // itself crosses window_end + allowedLateness, regardless of which
+        // window we're aggregating into.
+        //
+        // If the scan didn't wire a watermark tracker for us (e.g. the stream
+        // wasn't registered as streaming), fall back to the approximation:
+        // watermark ≈ maxObservedWindowStart.
+        long watermark;
+        if (watermarkTracker != null && watermarkTracker.isReady()) {
+            watermark = watermarkTracker.maxObservedEventTime();
+        } else if (maxObservedWindowStart != Long.MIN_VALUE) {
+            watermark = maxObservedWindowStart;
+        } else {
+            return;
+        }
+        // A window at ws is closable when ws + windowSize + allowedLateness ≤ watermark.
+        long maxClosableWs = watermark - windowSize - allowedLateness;
+        var it = perWindow.headMap(maxClosableWs, true).entrySet().iterator();
         while (it.hasNext()) {
             var entry = it.next();
             emitWindow(entry.getKey(), entry.getValue());
