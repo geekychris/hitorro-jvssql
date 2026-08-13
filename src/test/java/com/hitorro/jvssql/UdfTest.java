@@ -63,6 +63,32 @@ class UdfTest {
     }
 
     @Test
+    void groovyAggregateUdf_endToEnd() throws Exception {
+        // Groovy UDAF: collect distinct first letters per group, comma-joined.
+        // Note: closures need an explicit -> arrow so shell.evaluate returns a Closure
+        // (otherwise Groovy runs the block eagerly and returns its final value).
+        var engine = JvsSqlEngine.builder()
+            .registerGroovyAggregate("FIRST_LETTERS",
+                "init:   { -> [] as Set }\n"
+              + "accum:  { acc, v -> if (v) acc << v.toString().take(1); acc }\n"
+              + "result: { acc -> acc.sort().join(',') }")
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"alpha.pdf\", \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"beta.pdf\",  \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"apple.pdf\", \"dept\":\"eng\"}"),
+                jvs("{\"filename\":\"carrot.md\", \"dept\":\"sales\"}"),
+                jvs("{\"filename\":\"cheese.md\", \"dept\":\"sales\"}")
+            ), docsType()).build();
+        var rows = run(engine.compile(
+            "SELECT dept, FIRST_LETTERS(filename) AS letters FROM docs GROUP BY dept"));
+        assertThat(rows).hasSize(2);
+        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asText())).findFirst().orElseThrow();
+        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asText())).findFirst().orElseThrow();
+        assertThat(eng.get("letters").asText()).isEqualTo("a,b");   // distinct a (alpha, apple) + b (beta)
+        assertThat(sales.get("letters").asText()).isEqualTo("c");
+    }
+
+    @Test
     void groovyScalarUdf_endToEnd() throws Exception {
         var engine = JvsSqlEngine.builder()
             .registerGroovyFunction("SHOUT", 1, "arg1.toString().toUpperCase() + '!'")

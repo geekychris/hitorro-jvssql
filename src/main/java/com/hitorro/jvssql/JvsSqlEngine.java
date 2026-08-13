@@ -76,6 +76,7 @@ public final class JvsSqlEngine {
     private final Map<String, Class<?>> userJavaScalars;
     private final Map<String, Class<?>> userJavaAggregates;
     private final Map<String, Integer> userGroovyScalars;   // name → arity
+    private final java.util.Set<String> userGroovyAggregates;
     private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs;
     private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
     private final java.util.concurrent.ScheduledExecutorService refresher;
@@ -84,6 +85,7 @@ public final class JvsSqlEngine {
                          Map<String, Class<?>> userJavaScalars,
                          Map<String, Class<?>> userJavaAggregates,
                          Map<String, Integer> userGroovyScalars,
+                         java.util.Set<String> userGroovyAggregates,
                          Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs,
                          Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
@@ -92,6 +94,7 @@ public final class JvsSqlEngine {
         this.userJavaScalars = userJavaScalars;
         this.userJavaAggregates = userJavaAggregates;
         this.userGroovyScalars = userGroovyScalars;
+        this.userGroovyAggregates = userGroovyAggregates;
         this.refSpecs = refSpecs;
         this.lateDataSinks = lateDataSinks;
         // Spin up a small scheduler if any reference table needs periodic refresh.
@@ -198,6 +201,13 @@ public final class JvsSqlEngine {
             jvsSchema.add(e.getKey().toUpperCase(),
                     org.apache.calcite.schema.impl.ScalarFunctionImpl.create(stub));
         }
+        // Groovy aggregates: all share the GroovyAggregateStub signature at plan
+        // time; runtime dispatch goes through FunctionRegistry.getAggregate(name).
+        for (String name : userGroovyAggregates) {
+            jvsSchema.add(name.toUpperCase(),
+                    org.apache.calcite.schema.impl.AggregateFunctionImpl.create(
+                            com.hitorro.jvssql.udf.GroovyAggregateStub.class));
+        }
         // TODO Phase 1-late: aggregates + Groovy dispatch via a synthetic Java method
         // signature that the validator can consume.
 
@@ -260,6 +270,7 @@ public final class JvsSqlEngine {
         private final Map<String, Class<?>> userJavaScalars = new LinkedHashMap<>();
         private final Map<String, Class<?>> userJavaAggregates = new LinkedHashMap<>();
         private final Map<String, Integer> userGroovyScalars = new LinkedHashMap<>();
+        private final java.util.Set<String> userGroovyAggregates = new java.util.LinkedHashSet<>();
         private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs = new LinkedHashMap<>();
         private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
@@ -373,19 +384,30 @@ public final class JvsSqlEngine {
         }
 
         /**
-         * Register a Groovy-defined aggregate. Script must define three closures:
-         * <pre>{@code init:   { [] as List }
-         * accum:  { acc, v -> acc.add(v); acc }
-         * result: { acc -> acc.join(',') }}</pre>
+         * Register a Groovy-defined aggregate. Script defines three closures.
+         * Each closure MUST start with an explicit arrow ({@code ->}) so
+         * {@code shell.evaluate} returns a Closure (bare {@code {...}} blocks are
+         * evaluated eagerly by Groovy):
+         *
+         * <pre>{@code
+         * init:   { -> [] as List }
+         * accum:  { acc, v -> acc << v; acc }
+         * result: { acc -> acc.sort().join(',') }
+         * }</pre>
+         *
+         * <p>The aggregate takes a single argument at the SQL level; the Groovy
+         * {@code accum} closure receives the accumulator and the SQL argument
+         * for each row in the group.</p>
          */
         public Builder registerGroovyAggregate(String name, String groovyScript) {
             functions.putAggregate(name, com.hitorro.jvssql.udf.GroovyAggregateFn.compile(groovyScript));
+            userGroovyAggregates.add(name);
             return this;
         }
 
         public JvsSqlEngine build() {
             return new JvsSqlEngine(cfg.build(), schema, functions, userJavaScalars, userJavaAggregates,
-                    userGroovyScalars, refSpecs, lateDataSinks);
+                    userGroovyScalars, userGroovyAggregates, refSpecs, lateDataSinks);
         }
     }
 

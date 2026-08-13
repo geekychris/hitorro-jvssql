@@ -250,6 +250,7 @@ mvn -pl hitorro-jvssql exec:java \
 | 10 | `Example10_UserAggregate` | Register a Java UDAF (init/add/result) and use it in GROUP BY |
 | 11 | `Example11_StreamingWindows` | Event-time tumbling-window aggregation + late-data side sink (Phase 2 v1) |
 | 12 | `Example12_GroovyAndNestedWindow` | Groovy inline scalar UDFs + nested `{"window":{"start":..., "end":...}}` result via `WIN_STRUCT` |
+| 13 | `Example13_NdjsonStreamAndGroovyAgg` | Stream from an NDJSON file via `StreamSources.ndjson(baseFile)`, aggregate with a Groovy UDAF |
 
 ## Testing
 
