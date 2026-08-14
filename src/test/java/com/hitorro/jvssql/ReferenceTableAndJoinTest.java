@@ -94,6 +94,99 @@ class ReferenceTableAndJoinTest {
     }
 
     @Test
+    void rightJoin_nullPadsMissingLeftSide(@TempDir Path tmpDir) throws Exception {
+        // 3 users in the reference table, only 1 has a matching doc. RIGHT JOIN
+        // should surface all 3 users with null-padded left (doc) side for the
+        // two unmatched users.
+        var ref = writeUsersFile(tmpDir, "["
+            + "{\"email\":\"chris@hitorro.com\", \"name\":\"Chris\", \"tenure\":10},"
+            + "{\"email\":\"alex@example.com\",  \"name\":\"Alex\",  \"tenure\":3},"
+            + "{\"email\":\"other@nowhere.com\", \"name\":\"Other\", \"tenure\":1}"
+            + "]");
+        var engine = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"a.pdf\", \"author\":\"chris@hitorro.com\"}")
+            ), docsType())
+            .registerReferenceTable("users", ref, usersType())
+            .build();
+        var rows = run(engine.compile(
+            "SELECT d.filename, u.name "
+          + "FROM docs d "
+          + "RIGHT JOIN users u ON d.author = u.email"));
+        assertThat(rows).hasSize(3);
+        var byUserName = rows.stream().collect(
+            java.util.stream.Collectors.toMap(r -> r.get("name").asText(), r -> r.get("filename")));
+        assertThat(byUserName.get("Chris").asText()).isEqualTo("a.pdf");
+        assertThat(byUserName.get("Alex").isNull()).as("Alex has no matching doc").isTrue();
+        assertThat(byUserName.get("Other").isNull()).as("Other has no matching doc").isTrue();
+    }
+
+    @Test
+    void fullJoin_preservesBothUnmatchedSides(@TempDir Path tmpDir) throws Exception {
+        // 2 docs, 2 users. Only chris@ has both. Total = 3 rows: matched Chris,
+        // orphan doc, orphan user.
+        var ref = writeUsersFile(tmpDir, "["
+            + "{\"email\":\"chris@hitorro.com\", \"name\":\"Chris\", \"tenure\":10},"
+            + "{\"email\":\"lonely@nowhere.com\", \"name\":\"Lonely\", \"tenure\":1}"
+            + "]");
+        var engine = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"a.pdf\", \"author\":\"chris@hitorro.com\"}"),
+                jvs("{\"filename\":\"orphan.pdf\", \"author\":\"stranger@nowhere.com\"}")
+            ), docsType())
+            .registerReferenceTable("users", ref, usersType())
+            .build();
+        var rows = run(engine.compile(
+            "SELECT d.filename, u.name "
+          + "FROM docs d "
+          + "FULL JOIN users u ON d.author = u.email"));
+        assertThat(rows).hasSize(3);
+        long matched = rows.stream()
+                .filter(r -> !r.get("filename").isNull() && !r.get("name").isNull())
+                .count();
+        long docOnly = rows.stream()
+                .filter(r -> !r.get("filename").isNull() && r.get("name").isNull())
+                .count();
+        long userOnly = rows.stream()
+                .filter(r -> r.get("filename").isNull() && !r.get("name").isNull())
+                .count();
+        assertThat(matched).as("1 matched pair (Chris + a.pdf)").isEqualTo(1);
+        assertThat(docOnly).as("1 doc with no matching user (orphan.pdf)").isEqualTo(1);
+        assertThat(userOnly).as("1 user with no matching doc (Lonely)").isEqualTo(1);
+    }
+
+    @Test
+    void rightJoin_multipleLeftMatches_allSurface(@TempDir Path tmpDir) throws Exception {
+        // Two docs share the same author — RIGHT JOIN should surface both matches
+        // for that user, plus null-padded rows for unmatched users.
+        var ref = writeUsersFile(tmpDir, "["
+            + "{\"email\":\"chris@hitorro.com\", \"name\":\"Chris\", \"tenure\":10},"
+            + "{\"email\":\"alex@example.com\",  \"name\":\"Alex\",  \"tenure\":3}"
+            + "]");
+        var engine = JvsSqlEngine.builder()
+            .registerStream("docs", stream(
+                jvs("{\"filename\":\"a.pdf\", \"author\":\"chris@hitorro.com\"}"),
+                jvs("{\"filename\":\"b.pdf\", \"author\":\"chris@hitorro.com\"}")
+            ), docsType())
+            .registerReferenceTable("users", ref, usersType())
+            .build();
+        var rows = run(engine.compile(
+            "SELECT d.filename, u.name "
+          + "FROM docs d "
+          + "RIGHT JOIN users u ON d.author = u.email"));
+        // 2 chris matches + 1 unmatched Alex = 3 rows
+        assertThat(rows).hasSize(3);
+        long chrisRows = rows.stream()
+                .filter(r -> "Chris".equals(r.get("name").asText()))
+                .count();
+        long alexRows = rows.stream()
+                .filter(r -> "Alex".equals(r.get("name").asText()))
+                .count();
+        assertThat(chrisRows).isEqualTo(2);
+        assertThat(alexRows).isEqualTo(1);
+    }
+
+    @Test
     void ndjsonFormat_alsoWorks(@TempDir Path tmpDir) throws Exception {
         var ref = writeUsersFile(tmpDir,
               "{\"email\":\"a@x.com\", \"name\":\"A\", \"tenure\":1}\n"

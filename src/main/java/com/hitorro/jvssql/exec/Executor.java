@@ -526,17 +526,28 @@ public final class Executor {
 
     // -- hash join ------------------------------------------------------------
     //
-    // Phase 1 supports INNER and LEFT equijoins between a streaming left side and
-    // a fully-materialized right side. We materialize the right side into a HashMap
-    // keyed by the composite join-key tuple, then iterate the left side probing
-    // that map. The right side is typically a reference-table scan; anything else
-    // is legal too (Sort/Filter/Project on top of a scan) but the whole right
+    // Hash-based equijoin between a streaming left side and a fully-materialized
+    // right side. We materialize the right side into a HashMap keyed by the
+    // composite join-key tuple, then iterate the left side probing that map.
+    // The right side is typically a reference-table scan; anything else is
+    // legal too (Sort/Filter/Project on top of a scan) but the whole right
     // subtree is drained into memory at the start of iteration.
+    //
+    // OUTER JOIN semantics:
+    //   INNER — emit only matched (left,right) pairs.
+    //   LEFT  — emit all matched pairs; for unmatched left rows emit (left,null).
+    //   RIGHT — emit all matched pairs; for unmatched right rows emit (null,right)
+    //           via a trailing walk of the hash after left iteration exhausts.
+    //   FULL  — LEFT + RIGHT combined.
+    // For RIGHT/FULL we track a per-row matched-set (identity-keyed) during
+    // the probe phase, then walk the hash values emitting those not in the
+    // matched set.
 
     private Iterator<JsonNode> buildJoin(Join join) {
         JoinRelType joinType = join.getJoinType();
-        if (joinType != JoinRelType.INNER && joinType != JoinRelType.LEFT) {
-            throw new JvsSqlException("Phase 1 supports INNER and LEFT joins only; got " + joinType);
+        if (joinType != JoinRelType.INNER && joinType != JoinRelType.LEFT
+                && joinType != JoinRelType.RIGHT && joinType != JoinRelType.FULL) {
+            throw new JvsSqlException("Hash-join supports INNER / LEFT / RIGHT / FULL joins; got " + joinType);
         }
         JoinInfo info = join.analyzeCondition();
         if (info.leftKeys.isEmpty() || info.rightKeys.isEmpty()) {
@@ -571,8 +582,10 @@ public final class Executor {
         // Probe side: iterate left, look up matches, then apply the residual.
         Iterator<JsonNode> leftIt = build(join.getLeft());
         int[] leftKeyCols = info.leftKeys.stream().mapToInt(Integer::intValue).toArray();
+        boolean emitUnmatchedLeft = joinType == JoinRelType.LEFT || joinType == JoinRelType.FULL;
+        boolean emitUnmatchedRight = joinType == JoinRelType.RIGHT || joinType == JoinRelType.FULL;
         return new HashJoinIterator(leftIt, hash, leftKeyCols, leftFieldCount, rightFieldCount,
-                outNames, joinType == JoinRelType.LEFT, residual, rex);
+                outNames, emitUnmatchedLeft, emitUnmatchedRight, residual, rex);
     }
 
     private static List<JsonNode> keyTuple(JsonNode row, int[] keyCols) {
@@ -588,44 +601,59 @@ public final class Executor {
         private final int leftFieldCount;
         private final int rightFieldCount;
         private final List<String> outNames;
-        private final boolean isLeftJoin;
+        private final boolean emitUnmatchedLeft;    // LEFT or FULL
+        private final boolean emitUnmatchedRight;   // RIGHT or FULL
         private final org.apache.calcite.rex.RexNode residual;   // may be null
         private final RexEvaluator rex;
+        /** Right rows that satisfied the join condition. Identity-keyed so
+         *  duplicate JsonNodes with equal content are tracked independently.
+         *  Only populated when the join emits unmatched right rows. */
+        private final java.util.Set<JsonNode> matchedRightRows;
         private JsonNode nextOut;
         private JsonNode pendingLeft;
         private Iterator<JsonNode> pendingRightMatches;
-        private boolean pendingLeftMatched;   // for LEFT-join fallback
+        private boolean pendingLeftMatched;   // for LEFT/FULL null-padded fallback
+        /** Trailing walk over unmatched right rows, kicked off after the left
+         *  iterator is exhausted. Null until then. */
+        private Iterator<JsonNode> unmatchedRightWalker;
 
         HashJoinIterator(Iterator<JsonNode> left,
                          java.util.Map<List<JsonNode>, List<JsonNode>> hash,
                          int[] leftKeyCols, int leftFieldCount, int rightFieldCount,
-                         List<String> outNames, boolean isLeftJoin,
+                         List<String> outNames,
+                         boolean emitUnmatchedLeft, boolean emitUnmatchedRight,
                          org.apache.calcite.rex.RexNode residual, RexEvaluator rex) {
             this.left = left; this.hash = hash;
             this.leftKeyCols = leftKeyCols;
             this.leftFieldCount = leftFieldCount;
             this.rightFieldCount = rightFieldCount;
             this.outNames = outNames;
-            this.isLeftJoin = isLeftJoin;
+            this.emitUnmatchedLeft = emitUnmatchedLeft;
+            this.emitUnmatchedRight = emitUnmatchedRight;
             this.residual = residual;
             this.rex = rex;
+            this.matchedRightRows = emitUnmatchedRight
+                    ? java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>())
+                    : null;
         }
 
         @Override public boolean hasNext() {
             while (nextOut == null) {
                 // Continue draining right-side matches for the current left row.
                 while (pendingRightMatches != null && pendingRightMatches.hasNext()) {
-                    JsonNode candidate = combine(pendingLeft, pendingRightMatches.next());
+                    JsonNode rightRow = pendingRightMatches.next();
+                    JsonNode candidate = combine(pendingLeft, rightRow);
                     if (residual == null || rex.evalBool(residual, candidate)) {
                         pendingLeftMatched = true;
+                        if (matchedRightRows != null) matchedRightRows.add(rightRow);
                         nextOut = candidate;
                         return true;
                     }
                     // residual rejected this pair — try the next right-side match.
                 }
-                // No more right matches for the current left row. For LEFT joins, if
-                // none of the right candidates passed the residual, emit the null-padded row.
-                if (pendingLeft != null && isLeftJoin && !pendingLeftMatched) {
+                // No more right matches for the current left row. For LEFT/FULL, if
+                // none of the right candidates passed, emit the null-padded row.
+                if (pendingLeft != null && emitUnmatchedLeft && !pendingLeftMatched) {
                     nextOut = combine(pendingLeft, null);
                     pendingLeft = null;
                     pendingRightMatches = null;
@@ -635,21 +663,42 @@ public final class Executor {
                 pendingRightMatches = null;
                 pendingLeftMatched = false;
 
-                if (!left.hasNext()) return false;
+                if (!left.hasNext()) {
+                    // Left iterator exhausted. For RIGHT/FULL, walk the hash and
+                    // emit any right rows that never matched.
+                    if (emitUnmatchedRight) {
+                        if (unmatchedRightWalker == null) unmatchedRightWalker = collectUnmatchedRight();
+                        while (unmatchedRightWalker.hasNext()) {
+                            nextOut = combine(null, unmatchedRightWalker.next());
+                            return true;
+                        }
+                    }
+                    return false;
+                }
                 JsonNode leftRow = left.next();
                 List<JsonNode> key = keyTuple(leftRow, leftKeyCols);
                 List<JsonNode> matches = hash.get(key);
                 if (matches == null || matches.isEmpty()) {
-                    if (isLeftJoin) {
+                    if (emitUnmatchedLeft) {
                         nextOut = combine(leftRow, null);
                         return true;
                     }
-                    continue;   // INNER: skip
+                    continue;   // INNER / RIGHT: skip
                 }
                 pendingLeft = leftRow;
                 pendingRightMatches = matches.iterator();
             }
             return true;
+        }
+
+        private Iterator<JsonNode> collectUnmatchedRight() {
+            List<JsonNode> out = new java.util.ArrayList<>();
+            for (List<JsonNode> bucket : hash.values()) {
+                for (JsonNode row : bucket) {
+                    if (!matchedRightRows.contains(row)) out.add(row);
+                }
+            }
+            return out.iterator();
         }
 
         @Override public JsonNode next() {
@@ -660,10 +709,12 @@ public final class Executor {
         private JsonNode combine(JsonNode leftRow, JsonNode rightRow) {
             ObjectNode out = F.objectNode();
             // Left fields first, then right — matches Calcite's join row type.
+            // Either side may be null for OUTER joins where the corresponding
+            // side had no match; every field of a null side becomes SQL NULL.
             int lf = leftFieldCount;
             int rf = rightFieldCount;
             for (int i = 0; i < lf; i++) {
-                JsonNode v = nthField(leftRow, i);
+                JsonNode v = leftRow == null ? F.nullNode() : nthField(leftRow, i);
                 out.set(outNames.get(i), v == null ? F.nullNode() : v);
             }
             for (int j = 0; j < rf; j++) {
