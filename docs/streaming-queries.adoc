@@ -1,0 +1,424 @@
+= Streaming Queries (JvsSqlEngine)
+:toc: left
+:toclevels: 3
+:sectnums:
+:source-highlighter: rouge
+
+`hitorro-jvssql` is HiTorro's streaming SQL engine — Apache Calcite for
+parsing / planning, a custom executor over `Iterator<JVS>`, event-time
+windows, watermarks, session detection, and time-bounded interval
+joins. Emits `JsonNode` results either as an `AbstractIterator` you
+pull from or pushed into any `Sink<JsonNode>`.
+
+Related:
+xref:../../hitorro-jsontypesystem/docs/jvs-types.adoc[JVS Types] ·
+xref:../../hitorro-streams/docs/README.adoc[Streams / Sinks] ·
+xref:../../hitorro-mesh-pipelines/docs/pipeline-framework.adoc[Pipeline Framework]
+
+****
+Every example in this doc has a matching runnable class under
+`src/main/java/com/hitorro/jvssql/examples/`. Wire it up in a JUnit
+test or run directly with
+`mvn -pl hitorro-jvssql exec:java -Dexec.mainClass="com.hitorro.jvssql.examples.ExampleNN_..."`.
+****
+
+== Two modes: batch vs streaming
+
+Every registered source is one of two shapes:
+
+`StreamConfig.batch()`::
+  Finite iterator; the engine drains it, runs any GROUP BY / aggregates,
+  emits results at end-of-stream. This is the default when you call
+  `registerStream(alias, iterator, type)`.
+
+`StreamConfig.eventTime(eventTimeField)`::
+  Infinite (or very long) iterator with a per-row event-time field.
+  The engine tracks a watermark, emits window results as the watermark
+  advances past each window, and routes late arrivals to an optional
+  side-sink.
+
+[source,java]
+----
+StreamConfig cfg = StreamConfig.builder()
+        .eventTime("event_time")            // dotted-path to the millis-since-epoch field
+        .allowedLatenessMillis(30_000)      // 30-sec grace
+        .lateSink(new LatePrintSink())      // optional side-channel
+        .build();
+
+engine.registerStream("events", eventIterator, eventsType, cfg);
+----
+
+== Windows
+
+=== Tumbling (fixed-width, non-overlapping)
+
+Bucket rows into fixed-width windows via `WIN_START` / `WIN_END`
+scalar functions on `GROUP BY`:
+
+[source,sql]
+----
+SELECT dept,
+       WIN_START(event_time, 3600000) AS window_start,
+       WIN_END  (event_time, 3600000) AS window_end,
+       COUNT(*)  AS n,
+       SUM(file_size) AS total_bytes
+FROM   events
+GROUP BY dept, WIN_START(event_time, 3600000), WIN_END(event_time, 3600000)
+----
+
+Runnable: `Example11_StreamingWindows`.
+
+=== Session (gap-based)
+
+Same-key runs of events where consecutive event-times are within
+`gap` ms of each other. Preprocess via `SessionWindows.sessionize`
+before feeding the engine — it augments each row with `session_start`
+and `session_end`:
+
+[source,java]
+----
+long gap = 5 * 60_000L;   // 5 minutes
+var sessioned = SessionWindows.sessionize(events, "user", "event_time", gap);
+
+engine.registerStream("clicks", sessioned, sessionedType);
+----
+
+[source,sql]
+----
+SELECT user,
+       session_start,
+       session_end,
+       COUNT(*)  AS clicks_in_session,
+       session_end - session_start AS duration_ms
+FROM   clicks
+GROUP BY user, session_start, session_end
+----
+
+Runnable: `Example14_SessionWindows`.
+
+=== Hopping (sliding, overlapping)
+
+Same `WIN_START`/`WIN_END` trick but bucket_ms < slide_ms produces
+overlapping windows. See `Example12_GroovyAndNestedWindow` for the
+nested aggregate pattern.
+
+== Multi-table JOINs
+
+=== Stream × reference table
+
+The classic "enrich the event stream with a dimension":
+
+[source,java]
+----
+// Load reference table (small, fits in memory)
+var currencies = List.of(
+    jvs("{'alpha3':'USD','name':'US Dollar','symbol':'$'}"),
+    jvs("{'alpha3':'EUR','name':'Euro','symbol':'€'}"),
+    jvs("{'alpha3':'GBP','name':'Pound Sterling','symbol':'£'}")
+).iterator();
+
+var engine = JvsSqlEngine.builder()
+    .registerStream("orders",     ordersIterator,    ordersType)   // stream
+    .registerStream("currencies", currencies,        currenciesType) // reference
+    .build();
+
+var it = engine.compile(
+    "SELECT o.order_id, o.amount, c.symbol, c.name AS currency_name " +
+    "FROM   orders o " +
+    "JOIN   currencies c ON o.currency = c.alpha3"
+);
+----
+
+Runnable: `Example08_ReferenceJoin`.
+
+=== Stream × stream (interval join)
+
+Time-bounded join — a match counts only if the right event's timestamp
+is within `±window` of the left event's:
+
+[source,sql]
+----
+SELECT p.order_id, p.amount, s.tracking_id
+FROM   payments p
+JOIN   shipments s
+       ON p.order_id = s.order_id
+      AND s.event_time BETWEEN p.event_time - 60000 AND p.event_time + 60000
+----
+
+Runnable: `Example15_IntervalJoin` (payment → shipment within ±60s).
+
+=== Multiple joins
+
+Chain freely — the planner reorders based on cardinality estimates:
+
+[source,sql]
+----
+SELECT   o.order_id,
+         c.name  AS currency_name,
+         u.email AS buyer_email,
+         w.name  AS warehouse
+FROM     orders o
+JOIN     currencies c ON o.currency    = c.alpha3
+JOIN     users      u ON o.buyer_id    = u.user_id
+JOIN     warehouses w ON o.warehouse_id = w.id
+WHERE    o.amount > 100
+ORDER BY o.order_id
+LIMIT    50
+----
+
+== Watermarks + late data
+
+The engine tracks the max event-time seen; watermark advances lag by
+`allowedLatenessMillis`. Rows whose event-time is older than the
+current watermark are "late":
+
+* If a `lateSink` is registered on the `StreamConfig`, late rows go
+  there instead of the pipeline
+* Otherwise they're silently dropped from window aggregates
+
+[source,java]
+----
+StreamConfig cfg = StreamConfig.builder()
+        .eventTime("event_time")
+        .allowedLatenessMillis(30_000)
+        .lateSink(new Sink<JsonNode>() {
+            @Override public boolean init(JsonNode c) { return true; }
+            @Override public boolean start()          { return true; }
+            @Override public boolean add(JsonNode r)  {
+                System.err.println("[late] " + r);
+                return true;
+            }
+            @Override public boolean stop()           { return true; }
+            @Override public void close()             { }
+        })
+        .build();
+----
+
+Runnable: `Example11_StreamingWindows` includes late-data routing.
+
+== Push results to a Sink
+
+Instead of pulling an `AbstractIterator`, you can hand the engine any
+`Sink<JsonNode>` — great for wiring SQL results into a Lucene index,
+a KV store, a Kafka topic, or an NDJson file:
+
+[source,java]
+----
+try (Sink<JsonNode> sink = new NdjsonFileSink("file:./results.ndjson")) {
+    sink.start();
+    engine.compile(sql).pushTo(sink);
+    // count reflects rows written
+    System.out.println("wrote " + sink.count() + " rows");
+}
+----
+
+Runnable: `Example07_PushToSink`.
+
+Combine with any relocated sink:
+* `hitorro-streams`: `NdjsonFileSink`, `MemoryTableSink`
+* `hitorro-streams-kafka`: `KafkaSink`
+* `hitorro-streams-nats`: `NatsSink`
+* `hitorro-kvstore`: `KvStoreSink`
+* `hitorro-index`: `LuceneSink`, `JvsLuceneSink`
+
+Full sink reference:
+xref:../../hitorro-streams/docs/README.adoc[Streams / Sinks].
+
+== Running in your own app
+
+=== Standalone (no Spring)
+
+Add the dep, drive the engine directly:
+
+[source,xml]
+----
+<dependency>
+    <groupId>com.hitorro</groupId>
+    <artifactId>hitorro-jvssql</artifactId>
+    <version>3.0.1</version>
+</dependency>
+----
+
+[source,java]
+----
+public class MyEtl {
+    public static void main(String[] args) throws Exception {
+        Type ordersType   = loadType("classpath:/types/orders.json");
+        Type currenciesTy = loadType("classpath:/types/currencies.json");
+
+        var engine = JvsSqlEngine.builder()
+                .registerStream("orders",     openNdjson("./orders.ndjson"),     ordersType)
+                .registerStream("currencies", openJsonArray("./currencies.json"), currenciesTy)
+                .build();
+
+        String sql = """
+                SELECT o.order_id, o.amount, c.symbol
+                FROM   orders o
+                JOIN   currencies c ON o.currency = c.alpha3
+                WHERE  o.amount > 100
+                """;
+
+        try (var sink = new NdjsonFileSink("./high-value-orders.ndjson")) {
+            sink.start();
+            engine.compile(sql).pushTo(sink);
+        }
+    }
+}
+----
+
+=== Spring Boot
+
+Register the engine as a bean; inject wherever you need SQL:
+
+[source,java]
+----
+@Configuration
+public class SqlEngineConfig {
+
+    @Bean
+    public JvsSqlEngine sqlEngine(@Value("${orders.ndjson}") String ordersPath,
+                                  @Value("${currencies.json}") String currenciesPath,
+                                  TypeRegistry types) throws Exception {
+        return JvsSqlEngine.builder()
+            .registerStream("orders",     openNdjson(ordersPath),      types.get("orders"))
+            .registerStream("currencies", openJsonArray(currenciesPath), types.get("currencies"))
+            .build();
+    }
+}
+
+@RestController
+@RequestMapping("/api/reports")
+public class ReportController {
+
+    private final JvsSqlEngine engine;
+    public ReportController(JvsSqlEngine engine) { this.engine = engine; }
+
+    @PostMapping("/query")
+    public List<JsonNode> query(@RequestBody Map<String,String> body) throws Exception {
+        List<JsonNode> out = new ArrayList<>();
+        engine.compile(body.get("sql")).forEachRemaining(out::add);
+        return out;
+    }
+}
+----
+
+For streaming responses (SSE), push into a `Sink` that flushes each
+row to the HTTP response — see `hitorro-mesh-driver-app`'s
+`/mesh/queries/stream` endpoint for a working example.
+
+=== Inside the mesh
+
+The mesh driver's `POST /mesh/queries` and `POST /mesh/queries/stream`
+route SQL through the coordinator, which fans plans out to agent
+JVMs each running their own `JvsSqlEngine` over their local shard.
+No app code needed — just declare tables in the manifest and query.
+
+== Extending
+
+=== Add a scalar UDF
+
+Register a Java function callable from SQL:
+
+[source,java]
+----
+public final class MyUdfs {
+    /** Called from SQL as UPPER_SNAKE('foo bar') → 'FOO_BAR' */
+    public static String upperSnake(String s) {
+        return s == null ? null : s.toUpperCase().replace(' ', '_');
+    }
+}
+
+// Register once at engine build:
+var engine = JvsSqlEngine.builder()
+    .registerStream(...)
+    .registerScalarUdf("UPPER_SNAKE", MyUdfs.class, "upperSnake")
+    .build();
+----
+
+Runnable: `Example06_JavaUdf`.
+
+=== Add a user-defined aggregate
+
+Implement `UserAggregateFunction` with `init / accumulate / result`:
+
+[source,java]
+----
+public final class MedianAgg implements UserAggregateFunction {
+    private final List<Double> values = new ArrayList<>();
+    @Override public void   init()                       { values.clear(); }
+    @Override public void   accumulate(Object... args)   { values.add(((Number)args[0]).doubleValue()); }
+    @Override public Object result() {
+        values.sort(Double::compare);
+        return values.isEmpty() ? null : values.get(values.size()/2);
+    }
+}
+
+var engine = JvsSqlEngine.builder()
+    .registerAggregate("MEDIAN", MedianAgg.class)
+    ...
+----
+
+Runnable: `Example10_UserAggregate`.
+
+=== Add a Groovy-driven aggregate
+
+For one-off logic where writing a class is overkill:
+
+[source,java]
+----
+engine = JvsSqlEngine.builder()
+    .registerGroovyAggregate("BIGGEST_JUMP",
+        "def prev = null; def maxJump = 0; def acc = { v -> if (prev != null && v - prev > maxJump) maxJump = v - prev; prev = v }; def result = { maxJump }")
+    ...
+----
+
+Runnable: `Example12_GroovyAndNestedWindow`.
+
+=== Add a source
+
+`StreamSources` provides `csv`, `ndjson`, `kvstore`, `jvs`, `sink`
+adapters that turn any external data into an `Iterator<JVS>`. For
+custom sources implement the iterator directly and register:
+
+[source,java]
+----
+Iterator<JVS> myKafkaSource = new KafkaJvsIterator(bootstrap, topic, schemaRegistry);
+engine.registerStream("events", myKafkaSource, eventsType, streamConfig);
+----
+
+== The full example gallery
+
+Every capability above has a runnable JUnit-style class under
+`hitorro-jvssql/src/main/java/com/hitorro/jvssql/examples/`:
+
+[cols="1,4", options="header"]
+|===
+| Example                          | Shows
+| `Example01_BasicSelect`          | SELECT * FROM t WHERE ... LIMIT
+| `Example02_Expressions`          | arithmetic, CASE, string functions
+| `Example03_Aggregates`           | COUNT, SUM, AVG with GROUP BY
+| `Example04_SortAndLimit`         | ORDER BY + top-N
+| `Example05_DynamicAndMls`        | querying dynamic fields + mls[] entries
+| `Example06_JavaUdf`              | register + call a Java UDF
+| `Example07_PushToSink`           | stream results into any Sink
+| `Example08_ReferenceJoin`        | stream × reference-table JOIN
+| `Example09_ExternalSort`         | ORDER BY over larger-than-memory input
+| `Example10_UserAggregate`        | user-defined aggregate function
+| `Example11_StreamingWindows`     | tumbling windows + late-data routing
+| `Example12_GroovyAndNestedWindow`| Groovy aggregate + nested-window pattern
+| `Example13_NdjsonStreamAndGroovyAgg` | NDJson stream source + Groovy agg
+| `Example14_SessionWindows`       | session (gap-based) windows
+| `Example15_IntervalJoin`         | stream × stream time-bounded join
+|===
+
+Every one is invokable with:
+`mvn -pl hitorro-jvssql exec:java -Dexec.mainClass="com.hitorro.jvssql.examples.ExampleNN_..."`
+
+== Where to read more
+
+* Source: `hitorro-jvssql/src/main/java/com/hitorro/jvssql/`
+* xref:../../hitorro-jsontypesystem/docs/jvs-types.adoc[JVS Types] — the type model rows follow
+* xref:../../hitorro-streams/docs/README.adoc[Streams / Sinks] — everywhere results can land
+* xref:../../hitorro-mesh-pipelines/docs/pipeline-framework.adoc[Pipeline Framework] — how SQL fits into DAG jobs
+* xref:../../hitorro-mesh-core/docs/user-guide/mesh-user-guide.adoc[Mesh User Guide] — distributed SQL over the mesh
+* Apache Calcite https://calcite.apache.org/docs/reference.html[SQL reference] — supported dialect
