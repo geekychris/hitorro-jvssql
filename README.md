@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Hitorro Jvssql logo" width="180">
+</p>
+
 # hitorro-jvssql
 
 Streaming SQL engine over iterators of JVS (JSON-with-schema) documents.
