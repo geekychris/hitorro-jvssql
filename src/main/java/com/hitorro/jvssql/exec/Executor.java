@@ -123,20 +123,29 @@ public final class Executor {
         java.util.LinkedHashMap<String, JsonNode> seen = new java.util.LinkedHashMap<>();
         while (concat.hasNext()) {
             JsonNode row = concat.next();
-            seen.putIfAbsent(row.toString(), row);
+            seen.putIfAbsent(rowKey(row), row);
         }
         return seen.values().iterator();
+    }
+
+    /**
+     * The dedup key of a row for UNION / INTERSECT / EXCEPT: its compact JSON text. Written with
+     * {@code JsonMappers}, not {@code JsonNode.toString()}: on Jackson 3 the latter uses Jackson's
+     * internal serializer, which throws past 500 nesting levels (Jackson 2 and JsonMappers: 1000).
+     */
+    private static String rowKey(JsonNode row) {
+        return com.hitorro.util.json.JsonMappers.json().writeValueAsString(row);
     }
 
     private Iterator<JsonNode> buildSetOp(org.apache.calcite.rel.core.SetOp op, boolean isMinus) {
         // INTERSECT / EXCEPT (ALL variants dedup ratios differ; we implement set semantics).
         java.util.LinkedHashMap<String, JsonNode> left = new java.util.LinkedHashMap<>();
         Iterator<JsonNode> l = build(op.getInputs().get(0));
-        while (l.hasNext()) { JsonNode r = l.next(); left.putIfAbsent(r.toString(), r); }
+        while (l.hasNext()) { JsonNode r = l.next(); left.putIfAbsent(rowKey(r), r); }
         for (int i = 1; i < op.getInputs().size(); i++) {
             java.util.HashSet<String> rightKeys = new java.util.HashSet<>();
             Iterator<JsonNode> r = build(op.getInputs().get(i));
-            while (r.hasNext()) rightKeys.add(r.next().toString());
+            while (r.hasNext()) rightKeys.add(rowKey(r.next()));
             if (isMinus) {
                 left.keySet().removeAll(rightKeys);   // EXCEPT: drop rows also in right
             } else {

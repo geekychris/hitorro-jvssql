@@ -248,7 +248,10 @@ public final class RexEvaluator {
         // String CONCAT is an operator overload of PLUS in some dialects; Calcite emits ||
         // as a call to CONCAT — handled by function dispatch. Here we handle numeric only.
         if (!a.isNumber() || !b.isNumber()) {
-            throw new JvsSqlException("arithmetic on non-numeric values: " + a + " " + op + " " + b);
+            // JsonMappers, not JsonNode.toString() (Jackson 3 throws past 500 nesting levels there).
+            throw new JvsSqlException("arithmetic on non-numeric values: "
+                    + com.hitorro.util.json.JsonMappers.json().writeValueAsString(a) + " " + op + " "
+                    + com.hitorro.util.json.JsonMappers.json().writeValueAsString(b));
         }
         BigDecimal x = JsonValues.decimalValue(a);
         BigDecimal y = JsonValues.decimalValue(b);
