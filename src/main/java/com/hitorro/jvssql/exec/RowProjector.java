@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.util.json.keys.propaccess.PAContext;
 import com.hitorro.util.json.keys.propaccess.Propaccess;

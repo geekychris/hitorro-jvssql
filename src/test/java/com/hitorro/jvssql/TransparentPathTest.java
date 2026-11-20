@@ -36,7 +36,7 @@ class TransparentPathTest {
             ), docsType()).build();
         var q = engine.compile("SELECT filename, metadata.experimental AS x FROM docs");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("x").asText())
+        assertThat(rows).extracting(r -> r.get("x").asString())
                         .containsExactly("yes", "no");
     }
 
@@ -50,7 +50,7 @@ class TransparentPathTest {
             ), docsType()).build();
         var q = engine.compile("SELECT filename FROM docs WHERE metadata.experimental = 'yes'");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("a.pdf", "c.pdf");
     }
 
@@ -64,7 +64,7 @@ class TransparentPathTest {
             ), docsType()).build();
         var q = engine.compile("SELECT docs.filename FROM docs");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("a.pdf", "b.pdf");
     }
 
@@ -78,7 +78,7 @@ class TransparentPathTest {
             ), docsType()).build();
         var q = engine.compile("SELECT d.filename, d.metadata.experimental AS x FROM docs d");
         var rows = run(q);
-        assertThat(rows.get(0).get("x").asText()).isEqualTo("yes");
+        assertThat(rows.get(0).get("x").asString()).isEqualTo("yes");
     }
 
     @Test

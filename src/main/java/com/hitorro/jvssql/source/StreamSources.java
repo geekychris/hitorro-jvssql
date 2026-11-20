@@ -3,11 +3,11 @@
  */
 package com.hitorro.jvssql.source;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.MappingIterator;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JsonParser;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.MappingIterator;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.util.basefile.fs.BaseFile;
@@ -31,8 +31,7 @@ import java.util.NoSuchElementException;
  */
 public final class StreamSources {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final JsonFactory FACTORY = MAPPER.getFactory();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     private StreamSources() {}
 
@@ -74,13 +73,13 @@ public final class StreamSources {
             // large-file case, and JSON-array files are usually smaller anyway.
             InputStream is = source.getInputStream();
             JsonNode root;
-            try (JsonParser parser = FACTORY.createParser(is)) {
+            try (JsonParser parser = MAPPER.createParser(is)) {
                 root = MAPPER.readTree(parser);
             }
             if (root == null || !root.isArray()) {
                 throw new JvsSqlException("expected JSON array at top level of " + source.getAbsolutePath());
             }
-            Iterator<JsonNode> it = root.elements();
+            Iterator<JsonNode> it = root.values().iterator();
             return new Iterator<>() {
                 @Override public boolean hasNext() { return it.hasNext(); }
                 @Override public JVS next() { return new JVS(it.next()); }

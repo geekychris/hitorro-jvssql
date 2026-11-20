@@ -43,7 +43,7 @@ class ExpressionsTest {
             ), docsType()).build();
         var q = engine.compile("SELECT filename FROM docs WHERE file_size >= 200 AND file_size < 300");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("filename").asText()).containsExactly("b");
+        assertThat(rows).extracting(r -> r.get("filename").asString()).containsExactly("b");
     }
 
     @Test
@@ -55,7 +55,7 @@ class ExpressionsTest {
                 jvs("{\"filename\":\"notes.txt\"}")
             ), docsType()).build();
         assertThat(run(engine.compile("SELECT filename FROM docs WHERE filename LIKE '%.pdf'")))
-            .extracting(r -> r.get("filename").asText())
+            .extracting(r -> r.get("filename").asString())
             .containsExactly("report.pdf", "invoice.pdf");
         // Underscore = exactly one char. 'notes' has 5 letters, '_____' matches exactly 5.
         assertThat(run(JvsSqlEngine.builder()
@@ -65,7 +65,7 @@ class ExpressionsTest {
                 jvs("{\"filename\":\"notess.txt\"}")
             ), docsType()).build()
             .compile("SELECT filename FROM docs WHERE filename LIKE '_____.txt'")))
-            .extracting(r -> r.get("filename").asText())
+            .extracting(r -> r.get("filename").asString())
             .containsExactly("notes.txt");
     }
 
@@ -110,7 +110,7 @@ class ExpressionsTest {
           + "       WHEN file_size < 1000 THEN 'small' "
           + "       ELSE 'big' END AS bucket FROM docs");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("bucket").asText())
+        assertThat(rows).extracting(r -> r.get("bucket").asString())
                         .containsExactly("tiny", "small", "big");
     }
 
@@ -124,7 +124,7 @@ class ExpressionsTest {
             ), docsType()).build();
         var q = engine.compile("SELECT filename, COALESCE(author, 'anonymous') AS who FROM docs");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("who").asText())
+        assertThat(rows).extracting(r -> r.get("who").asString())
                         .containsExactly("chris", "anonymous", "anonymous");
     }
 
@@ -136,10 +136,10 @@ class ExpressionsTest {
             "SELECT UPPER(filename) AS u, LOWER(filename) AS l, TRIM(filename) AS t, "
           + "SUBSTRING(TRIM(filename), 1, 6) AS pre, CHAR_LENGTH(TRIM(filename)) AS len FROM docs");
         var row = run(q).get(0);
-        assertThat(row.get("u").asText()).isEqualTo("  REPORT.PDF  ");
-        assertThat(row.get("l").asText()).isEqualTo("  report.pdf  ");
-        assertThat(row.get("t").asText()).isEqualTo("Report.PDF");
-        assertThat(row.get("pre").asText()).isEqualTo("Report");
+        assertThat(row.get("u").asString()).isEqualTo("  REPORT.PDF  ");
+        assertThat(row.get("l").asString()).isEqualTo("  report.pdf  ");
+        assertThat(row.get("t").asString()).isEqualTo("Report.PDF");
+        assertThat(row.get("pre").asString()).isEqualTo("Report");
         assertThat(row.get("len").asLong()).isEqualTo(10L);
     }
 
@@ -167,7 +167,7 @@ class ExpressionsTest {
             ), docsType()).build();
         // NOT LIKE
         assertThat(run(engine.compile("SELECT filename FROM docs WHERE filename NOT LIKE '%.pdf'")))
-            .extracting(r -> r.get("filename").asText())
+            .extracting(r -> r.get("filename").asString())
             .containsExactly("notes.txt", "draft.md");
         // NOT IN
         var engine2 = JvsSqlEngine.builder()
@@ -178,7 +178,7 @@ class ExpressionsTest {
                 jvs("{\"filename\":\"draft.md\",     \"classification\":\"restricted\", \"file_size\":50}")
             ), docsType()).build();
         assertThat(run(engine2.compile("SELECT filename FROM docs WHERE classification NOT IN ('public', 'internal')")))
-            .extracting(r -> r.get("filename").asText())
+            .extracting(r -> r.get("filename").asString())
             .containsExactly("draft.md");
         // NOT BETWEEN
         var engine3 = JvsSqlEngine.builder()
@@ -189,7 +189,7 @@ class ExpressionsTest {
                 jvs("{\"filename\":\"draft.md\",     \"classification\":\"restricted\", \"file_size\":50}")
             ), docsType()).build();
         assertThat(run(engine3.compile("SELECT filename FROM docs WHERE file_size NOT BETWEEN 100 AND 500")))
-            .extracting(r -> r.get("filename").asText())
+            .extracting(r -> r.get("filename").asString())
             .containsExactly("notes.txt", "draft.md");
     }
 

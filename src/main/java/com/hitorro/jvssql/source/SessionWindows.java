@@ -3,9 +3,9 @@
  */
 package com.hitorro.jvssql.source;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.util.json.keys.propaccess.PAContext;
@@ -18,6 +18,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * SESSION-window preprocessing: takes an input stream of {@link JVS} rows and
@@ -121,7 +122,7 @@ public final class SessionWindows {
     private static String extractString(JVS jvs, Propaccess p) {
         try {
             JsonNode v = p.get(jvs, jvs.getJsonNode(), PAContext.AlwaysCreate);
-            return v == null || v.isNull() ? null : v.asText();
+            return v == null || v.isNull() ? null : JsonValues.asText(v);
         } catch (Exception e) {
             return null;
         }
@@ -131,9 +132,9 @@ public final class SessionWindows {
         try {
             JsonNode v = p.get(jvs, jvs.getJsonNode(), PAContext.AlwaysCreate);
             if (v == null || v.isNull()) return 0L;
-            if (v.isNumber()) return v.asLong();
+            if (v.isNumber()) return JsonValues.asLong(v);
             // Fall back to ISO-8601 parse for string timestamps.
-            return java.time.Instant.parse(v.asText()).toEpochMilli();
+            return java.time.Instant.parse(JsonValues.asText(v)).toEpochMilli();
         } catch (Exception e) {
             throw new JvsSqlException("cannot read event_time at " + p + ": " + e.getMessage(), e);
         }
@@ -240,8 +241,8 @@ public final class SessionWindows {
             @Override public JVS next() {
                 JVS jvs = flat.next();
                 ObjectNode obj = (ObjectNode) jvs.getJsonNode();
-                long start = obj.remove("session_start").asLong();
-                long end   = obj.remove("session_end").asLong();
+                long start = JsonValues.asLong(obj.remove("session_start"));
+                long end   = JsonValues.asLong(obj.remove("session_end"));
                 ObjectNode session = F.objectNode();
                 session.put("start", start);
                 session.put("end",   end);

@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql.examples;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jvssql.JvsSqlEngine;
 import com.hitorro.jvssql.PreparedQuery;
 import com.hitorro.util.core.iterator.sinks.Sink;
@@ -32,7 +32,7 @@ public final class Example07_PushToSink {
     /** A tiny Sink that just prints each row it receives. */
     static final class PrintSink implements Sink<JsonNode> {
         private long count = 0;
-        @Override public boolean init(com.fasterxml.jackson.databind.JsonNode config) { return true; }
+        @Override public boolean init(tools.jackson.databind.JsonNode config) { return true; }
         @Override public boolean start() { System.out.println("(sink: start)"); return true; }
         @Override public boolean add(JsonNode row) throws IOException, StoreException {
             System.out.println("(sink: row " + (++count) + ") " + row);

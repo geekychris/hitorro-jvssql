@@ -3,11 +3,13 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.util.basefile.fs.BaseFile;
 import com.hitorro.util.basefile.fs.file.FileFileSystem;
+import tools.jackson.core.JacksonException;
 
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
@@ -46,7 +48,7 @@ import java.util.PriorityQueue;
  */
 public final class ExternalMergeSort {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     private ExternalMergeSort() {}
 
@@ -123,7 +125,7 @@ public final class ExternalMergeSort {
             @Override public JsonNode next() {
                 if (!hasNext()) throw new NoSuchElementException();
                 try { return MAPPER.readTree(next); }
-                catch (IOException e) { throw new JvsSqlException("spill parse failed: " + e.getMessage(), e); }
+                catch (JacksonException e) { throw new JvsSqlException("spill parse failed: " + e.getMessage(), e); }
                 finally { next = null; }
             }
             private void closeQuietly() {

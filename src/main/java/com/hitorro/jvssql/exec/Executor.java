@@ -3,9 +3,9 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.jvssql.schema.JvsTable;
@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Executes a Calcite {@link RelNode} plan against registered streams, producing an
@@ -217,8 +218,8 @@ public final class Executor {
                 JsonNode v = eventTimePath.get(row, row.getJsonNode(),
                         com.hitorro.util.json.keys.propaccess.PAContext.AlwaysCreate);
                 if (v == null || v.isNull()) return 0L;
-                if (v.isNumber()) return v.asLong();
-                return java.time.Instant.parse(v.asText()).toEpochMilli();
+                if (v.isNumber()) return JsonValues.asLong(v);
+                return java.time.Instant.parse(JsonValues.asText(v)).toEpochMilli();
             } catch (Exception e) {
                 return 0L;
             }
@@ -379,7 +380,7 @@ public final class Executor {
 
     private static JsonNode nthField(JsonNode row, int col) {
         int j = 0;
-        for (Iterator<String> it = row.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = row.propertyNames().iterator(); it.hasNext(); ) {
             String n = it.next();
             if (j++ == col) return row.get(n);
         }
@@ -520,8 +521,8 @@ public final class Executor {
         if (aNull && bNull) return 0;
         if (aNull) return fc.nullDirection == RelFieldCollation.NullDirection.LAST ? 1 : -1;
         if (bNull) return fc.nullDirection == RelFieldCollation.NullDirection.LAST ? -1 : 1;
-        if (a.isNumber() && b.isNumber()) return a.decimalValue().compareTo(b.decimalValue());
-        return a.asText().compareTo(b.asText());
+        if (a.isNumber() && b.isNumber()) return JsonValues.decimalValue(a).compareTo(JsonValues.decimalValue(b));
+        return JsonValues.asText(a).compareTo(JsonValues.asText(b));
     }
 
     // -- hash join ------------------------------------------------------------

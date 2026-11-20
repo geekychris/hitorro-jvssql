@@ -3,8 +3,9 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import org.junit.jupiter.api.Test;
@@ -22,7 +23,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class BasicSelectTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     /**
      * Trivial type: three fields, all string, mimicking a filename catalog row.
@@ -66,7 +67,7 @@ class BasicSelectTest {
         List<JsonNode> rows = toList(q);
 
         assertThat(rows).hasSize(3);
-        assertThat(rows.get(0).get("filename").asText()).isEqualTo("a.pdf");
+        assertThat(rows.get(0).get("filename").asString()).isEqualTo("a.pdf");
         assertThat(rows.get(2).get("file_size").asLong()).isEqualTo(2000L);
     }
 
@@ -86,7 +87,7 @@ class BasicSelectTest {
         List<JsonNode> rows = toList(q);
 
         assertThat(rows).hasSize(2);
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("b.pdf", "c.pdf");
     }
 

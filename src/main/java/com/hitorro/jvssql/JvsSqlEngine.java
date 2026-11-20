@@ -78,7 +78,7 @@ public final class JvsSqlEngine {
     private final Map<String, Integer> userGroovyScalars;   // name → arity
     private final java.util.Set<String> userGroovyAggregates;
     private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs;
-    private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks;
+    private final Map<String, Sink<tools.jackson.databind.JsonNode>> lateDataSinks;
     private final java.util.concurrent.ScheduledExecutorService refresher;
 
     private JvsSqlEngine(EngineConfig engineConfig, JvsSchema schema, FunctionRegistry functions,
@@ -87,7 +87,7 @@ public final class JvsSqlEngine {
                          Map<String, Integer> userGroovyScalars,
                          java.util.Set<String> userGroovyAggregates,
                          Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs,
-                         Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks) {
+                         Map<String, Sink<tools.jackson.databind.JsonNode>> lateDataSinks) {
         this.engineConfig = engineConfig;
         this.schema = schema;
         this.functions = functions;
@@ -122,7 +122,7 @@ public final class JvsSqlEngine {
     public EngineConfig config() { return engineConfig; }
     public JvsSchema schema() { return schema; }
     public FunctionRegistry functions() { return functions; }
-    public Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks() { return lateDataSinks; }
+    public Map<String, Sink<tools.jackson.databind.JsonNode>> lateDataSinks() { return lateDataSinks; }
 
     /**
      * Parse, validate, plan, optimize the SQL. Returns a reusable prepared query.
@@ -277,7 +277,7 @@ public final class JvsSqlEngine {
         private final Map<String, Integer> userGroovyScalars = new LinkedHashMap<>();
         private final java.util.Set<String> userGroovyAggregates = new java.util.LinkedHashSet<>();
         private final Map<String, com.hitorro.jvssql.refdata.RefTableSpec> refSpecs = new LinkedHashMap<>();
-        private final Map<String, Sink<com.fasterxml.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
+        private final Map<String, Sink<tools.jackson.databind.JsonNode>> lateDataSinks = new LinkedHashMap<>();
 
         public Builder withSpillDirectory(BaseFile dir) { cfg.spillDir(dir); return this; }
         public Builder withMemoryBudgetMB(int mb) { cfg.memoryBudgetMB(mb); return this; }
@@ -332,7 +332,7 @@ public final class JvsSqlEngine {
         }
 
         /** Route records that are too late (beyond {@code allowedLateness}) to this sink instead of dropping them. */
-        public Builder withLateDataSink(String streamName, Sink<com.fasterxml.jackson.databind.JsonNode> sink) {
+        public Builder withLateDataSink(String streamName, Sink<tools.jackson.databind.JsonNode> sink) {
             lateDataSinks.put(streamName, sink);
             return this;
         }
@@ -341,7 +341,7 @@ public final class JvsSqlEngine {
          * Register a Java scalar function callable from SQL. The class must have a
          * public no-arg constructor and a single public {@code eval(...)} method
          * whose parameters and return are one of: primitive, boxed primitive, String,
-         * or {@link com.fasterxml.jackson.databind.JsonNode} (for raw JSON access).
+         * or {@link tools.jackson.databind.JsonNode} (for raw JSON access).
          *
          * <p>Example: {@code public class Hash64 { public long eval(String s) { ... } }}
          * then {@code .registerFunction("hash64", Hash64.class)} lets you write

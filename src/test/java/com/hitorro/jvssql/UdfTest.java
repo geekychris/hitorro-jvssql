@@ -56,10 +56,10 @@ class UdfTest {
         var rows = run(engine.compile(
             "SELECT dept, STR_CONCAT(filename) AS files FROM docs GROUP BY dept"));
         assertThat(rows).hasSize(2);
-        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asText())).findFirst().orElseThrow();
-        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asText())).findFirst().orElseThrow();
-        assertThat(eng.get("files").asText()).isIn("a.pdf,b.pdf", "b.pdf,a.pdf");
-        assertThat(sales.get("files").asText()).isEqualTo("c.pdf");
+        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asString())).findFirst().orElseThrow();
+        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asString())).findFirst().orElseThrow();
+        assertThat(eng.get("files").asString()).isIn("a.pdf,b.pdf", "b.pdf,a.pdf");
+        assertThat(sales.get("files").asString()).isEqualTo("c.pdf");
     }
 
     @Test
@@ -82,10 +82,10 @@ class UdfTest {
         var rows = run(engine.compile(
             "SELECT dept, FIRST_LETTERS(filename) AS letters FROM docs GROUP BY dept"));
         assertThat(rows).hasSize(2);
-        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asText())).findFirst().orElseThrow();
-        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asText())).findFirst().orElseThrow();
-        assertThat(eng.get("letters").asText()).isEqualTo("a,b");   // distinct a (alpha, apple) + b (beta)
-        assertThat(sales.get("letters").asText()).isEqualTo("c");
+        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asString())).findFirst().orElseThrow();
+        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asString())).findFirst().orElseThrow();
+        assertThat(eng.get("letters").asString()).isEqualTo("a,b");   // distinct a (alpha, apple) + b (beta)
+        assertThat(sales.get("letters").asString()).isEqualTo("c");
     }
 
     @Test
@@ -100,7 +100,7 @@ class UdfTest {
         var rows = run(engine.compile(
             "SELECT SHOUT(filename) AS loud, SUM_LEN(filename, dept) AS total_len FROM docs"));
         assertThat(rows).hasSize(2);
-        assertThat(rows.get(0).get("loud").asText()).isEqualTo("A.PDF!");
+        assertThat(rows.get(0).get("loud").asString()).isEqualTo("A.PDF!");
         // 'a.pdf' (5) + 'eng' (3) = 8
         assertThat(rows.get(0).get("total_len").asLong()).isEqualTo(8L);
     }

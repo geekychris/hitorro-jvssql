@@ -36,7 +36,7 @@ class StreamSourcesTest {
             .build();
         var rows = run(engine.compile(
             "SELECT filename FROM docs WHERE file_size >= 200 ORDER BY file_size"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("b", "c");
     }
 

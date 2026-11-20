@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.config.StreamConfig;
@@ -80,15 +80,15 @@ class StreamingWindowTest {
         //   hour 1 (3.6M..7.2M): eng total 400
         //   hour 2 (7.2M..):    sales total 500
         assertThat(rows).hasSize(4);
-        assertThat(rows.get(0).get("dept").asText()).isEqualTo("eng");
+        assertThat(rows.get(0).get("dept").asString()).isEqualTo("eng");
         assertThat(rows.get(0).get("window_start").asLong()).isEqualTo(0);
         assertThat(rows.get(0).get("n").asLong()).isEqualTo(2);
         assertThat(rows.get(0).get("total").asLong()).isEqualTo(300);
-        assertThat(rows.get(1).get("dept").asText()).isEqualTo("sales");
+        assertThat(rows.get(1).get("dept").asString()).isEqualTo("sales");
         assertThat(rows.get(2).get("window_start").asLong()).isEqualTo(hourMs);
-        assertThat(rows.get(2).get("dept").asText()).isEqualTo("eng");
+        assertThat(rows.get(2).get("dept").asString()).isEqualTo("eng");
         assertThat(rows.get(3).get("window_start").asLong()).isEqualTo(2 * hourMs);
-        assertThat(rows.get(3).get("dept").asText()).isEqualTo("sales");
+        assertThat(rows.get(3).get("dept").asString()).isEqualTo("sales");
     }
 
     /** Counting sink that captures the routed rows for assertion. */
@@ -120,9 +120,9 @@ class StreamingWindowTest {
 
         var rows = run(engine.compile("SELECT dept, file_size FROM events"));
         assertThat(rows).hasSize(3);
-        assertThat(rows).extracting(r -> r.get("dept").asText()).containsExactly("a", "b", "c");
+        assertThat(rows).extracting(r -> r.get("dept").asString()).containsExactly("a", "b", "c");
         assertThat(lateSink.received).hasSize(1);
-        assertThat(lateSink.received.get(0).get("dept").asText()).isEqualTo("d");
+        assertThat(lateSink.received.get(0).get("dept").asString()).isEqualTo("d");
     }
 
     @Test
@@ -187,7 +187,7 @@ class StreamingWindowTest {
         assertThat(rows).hasSize(3);
         // First-emitted row should be from the closed hour-0 window (window_start=0).
         assertThat(rows.get(0).get("window_start").asLong()).isEqualTo(0L);
-        assertThat(rows.get(0).get("dept").asText()).isEqualTo("eng");
+        assertThat(rows.get(0).get("dept").asString()).isEqualTo("eng");
         assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
         assertThat(rows.get(0).get("total").asLong()).isEqualTo(300L);
         // Hour-1 window closes when the hour-2 event (t=130min) arrives.
@@ -235,13 +235,13 @@ class StreamingWindowTest {
         assertThat(it.hasNext()).isTrue();
         JsonNode first = it.next();
         assertThat(first.get("window_start").asLong()).isEqualTo(0L);
-        assertThat(first.get("dept").asText()).isEqualTo("eng");
+        assertThat(first.get("dept").asString()).isEqualTo("eng");
         assertThat(first.get("n").asLong()).isEqualTo(2L);
         // Second and third rows: window 1's single sales event, flushed at EOF.
         assertThat(it.hasNext()).isTrue();
         JsonNode second = it.next();
         assertThat(second.get("window_start").asLong()).isEqualTo(minute);
-        assertThat(second.get("dept").asText()).isEqualTo("sales");
+        assertThat(second.get("dept").asString()).isEqualTo("sales");
     }
 
     @Test

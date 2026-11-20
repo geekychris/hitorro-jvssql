@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.source.SessionWindows;
@@ -68,13 +68,13 @@ class SessionWindowsTest {
         //   B [5k, 5k]    n=1, total=10
         //   B [200k,200k] n=1, total=20
         assertThat(rows).hasSize(4);
-        assertThat(rows.get(0).get("user").asText()).isEqualTo("A");
+        assertThat(rows.get(0).get("user").asString()).isEqualTo("A");
         assertThat(rows.get(0).get("session_start").asLong()).isEqualTo(0);
         assertThat(rows.get(0).get("session_end").asLong()).isEqualTo(10_000L);
         assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
         assertThat(rows.get(0).get("total").asLong()).isEqualTo(3L);
         assertThat(rows.get(1).get("session_start").asLong()).isEqualTo(100_000L);
-        assertThat(rows.get(2).get("user").asText()).isEqualTo("B");
+        assertThat(rows.get(2).get("user").asString()).isEqualTo("B");
         assertThat(rows.get(2).get("session_start").asLong()).isEqualTo(5_000L);
         assertThat(rows.get(3).get("session_start").asLong()).isEqualTo(200_000L);
     }
@@ -122,7 +122,7 @@ class SessionWindowsTest {
         assertThat(rows.get(0).get("session_end").asLong()).isEqualTo(10_000L);
         assertThat(rows.get(0).get("n").asLong()).isEqualTo(2L);
         assertThat(rows.get(1).get("session_start").asLong()).isEqualTo(45_000L);
-        assertThat(rows.get(2).get("user").asText()).isEqualTo("B");
+        assertThat(rows.get(2).get("user").asString()).isEqualTo("B");
     }
 
     @Test

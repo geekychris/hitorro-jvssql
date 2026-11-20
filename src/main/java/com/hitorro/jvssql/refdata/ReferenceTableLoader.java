@@ -3,12 +3,12 @@
  */
 package com.hitorro.jvssql.refdata;
 
-import com.fasterxml.jackson.core.JsonFactory;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.core.JsonToken;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.MappingIterator;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.MappingIterator;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.util.basefile.fs.BaseFile;
@@ -34,8 +34,7 @@ import java.util.List;
  */
 public final class ReferenceTableLoader {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final JsonFactory FACTORY = MAPPER.getFactory();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     private ReferenceTableLoader() {}
 
@@ -69,7 +68,7 @@ public final class ReferenceTableLoader {
     private static List<JVS> readNdjson(byte[] bytes) throws Exception {
         // Jackson's MappingIterator streams JSON values back-to-back.
         List<JVS> out = new ArrayList<>();
-        try (JsonParser parser = FACTORY.createParser(bytes);
+        try (JsonParser parser = MAPPER.createParser(bytes);
              MappingIterator<JsonNode> it = MAPPER.readValues(parser, JsonNode.class)) {
             while (it.hasNext()) {
                 JsonNode node = it.next();

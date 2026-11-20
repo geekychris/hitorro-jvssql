@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -34,7 +34,7 @@ class FeaturePackTest {
             "SELECT dept, COUNT(DISTINCT author) AS distinct_authors, COUNT(*) AS total "
           + "FROM docs GROUP BY dept ORDER BY dept"));
         assertThat(rows).hasSize(2);
-        assertThat(rows.get(0).get("dept").asText()).isEqualTo("eng");
+        assertThat(rows.get(0).get("dept").asString()).isEqualTo("eng");
         assertThat(rows.get(0).get("distinct_authors").asLong()).isEqualTo(2L);
         assertThat(rows.get(0).get("total").asLong()).isEqualTo(3L);
         assertThat(rows.get(1).get("distinct_authors").asLong()).isEqualTo(1L);
@@ -53,7 +53,7 @@ class FeaturePackTest {
             ), docsType()).build();
         var rows = run(engine.compile(
             "SELECT filename FROM a UNION ALL SELECT filename FROM b ORDER BY filename"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("x", "y", "y", "z");
     }
 
@@ -82,7 +82,7 @@ class FeaturePackTest {
             ), docsType()).build();
         var rows = run(engine.compile(
             "SELECT filename FROM a INTERSECT SELECT filename FROM b"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactlyInAnyOrder("y", "z");
     }
 
@@ -97,7 +97,7 @@ class FeaturePackTest {
             ), docsType()).build();
         var rows = run(engine.compile(
             "SELECT filename FROM a EXCEPT SELECT filename FROM b"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactlyInAnyOrder("x", "z");
     }
 
@@ -121,7 +121,7 @@ class FeaturePackTest {
         var q = engine.compile("SELECT filename FROM docs WHERE file_size > ?");
         q.bind(1, 400);
         List<JsonNode> rows = run(q);
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("b", "c");
     }
 }
