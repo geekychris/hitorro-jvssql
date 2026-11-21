@@ -48,8 +48,8 @@ class AggregatesTest {
         var rows = run(q);
         assertThat(rows).hasSize(2);
         // Order depends on group iteration; find each dept
-        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asText())).findFirst().orElseThrow();
-        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asText())).findFirst().orElseThrow();
+        var eng = rows.stream().filter(r -> "eng".equals(r.get("dept").asString())).findFirst().orElseThrow();
+        var sales = rows.stream().filter(r -> "sales".equals(r.get("dept").asString())).findFirst().orElseThrow();
         assertThat(eng.get("n").asLong()).isEqualTo(3L);
         assertThat(eng.get("total").asLong()).isEqualTo(600L);
         assertThat(eng.get("lo").asLong()).isEqualTo(100L);
@@ -84,7 +84,7 @@ class AggregatesTest {
         var rows = run(engine.compile(
             "SELECT dept, SUM(file_size) AS total FROM docs GROUP BY dept HAVING SUM(file_size) > 500"));
         assertThat(rows).hasSize(1);
-        assertThat(rows.get(0).get("dept").asText()).isEqualTo("sales");
+        assertThat(rows.get(0).get("dept").asString()).isEqualTo("sales");
     }
 
     @Test

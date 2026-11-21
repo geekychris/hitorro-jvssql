@@ -26,7 +26,7 @@ class DynamicAndMlsTest {
             ), docsType()).build();
         var q = engine.compile("SELECT filename, JPATH('metadata.experimental') AS x FROM docs");
         var rows = run(q);
-        assertThat(rows).extracting(r -> r.get("x").asText())
+        assertThat(rows).extracting(r -> r.get("x").asString())
                         .containsExactly("yes", "no");
     }
 
@@ -57,9 +57,9 @@ class DynamicAndMlsTest {
         var q = engine.compile("SELECT filename, MLS(content, 'en') AS en, MLS(content, 'fr') AS fr FROM docs");
         var rows = run(q);
         assertThat(rows).hasSize(2);
-        assertThat(rows.get(0).get("en").asText()).isEqualTo("Hello world");
-        assertThat(rows.get(0).get("fr").asText()).isEqualTo("Bonjour le monde");
-        assertThat(rows.get(1).get("en").asText()).isEqualTo("Goodbye");
+        assertThat(rows.get(0).get("en").asString()).isEqualTo("Hello world");
+        assertThat(rows.get(0).get("fr").asString()).isEqualTo("Bonjour le monde");
+        assertThat(rows.get(1).get("en").asString()).isEqualTo("Goodbye");
         // French absent on second row → NULL
         assertThat(rows.get(1).get("fr").isNull()).isTrue();
     }

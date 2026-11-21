@@ -3,8 +3,8 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 import com.hitorro.jvssql.JvsSqlException;
 import org.apache.calcite.rex.RexCall;
 import org.apache.calcite.rex.RexInputRef;
@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.regex.Pattern;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Evaluates a Calcite {@link RexNode} against a {@link JsonNode} row and returns a
@@ -63,10 +64,10 @@ public final class RexEvaluator {
     /** Evaluate a boolean-typed expression. NULL → false. */
     public boolean evalBool(RexNode node, JsonNode row) {
         JsonNode v = eval(node, row);
-        return v != null && !v.isNull() && v.asBoolean(false);
+        return v != null && !v.isNull() && JsonValues.asBoolean(v, false);
     }
 
-    /** Evaluate an expression; returns a JsonNode (possibly {@link com.fasterxml.jackson.databind.node.NullNode}) or {@code null} for SQL NULL. */
+    /** Evaluate an expression; returns a JsonNode (possibly {@link tools.jackson.databind.node.NullNode}) or {@code null} for SQL NULL. */
     public JsonNode eval(RexNode node, JsonNode row) {
         if (node instanceof RexInputRef ref) {
             return columnByIndex(row, ref.getIndex());
@@ -110,11 +111,11 @@ public final class RexEvaluator {
             }
             case IS_TRUE: {
                 JsonNode v = eval(ops.get(0), row);
-                return F.booleanNode(v != null && !v.isNull() && v.asBoolean(false));
+                return F.booleanNode(v != null && !v.isNull() && JsonValues.asBoolean(v, false));
             }
             case IS_FALSE: {
                 JsonNode v = eval(ops.get(0), row);
-                return F.booleanNode(v != null && !v.isNull() && !v.asBoolean(false));
+                return F.booleanNode(v != null && !v.isNull() && !JsonValues.asBoolean(v, false));
             }
             default: /* fall through */
         }
@@ -135,14 +136,14 @@ public final class RexEvaluator {
             case MINUS_PREFIX: {
                 JsonNode v = eval(ops.get(0), row);
                 if (v == null || v.isNull() || !v.isNumber()) return null;
-                return F.numberNode(v.decimalValue().negate());
+                return F.numberNode(JsonValues.decimalValue(v).negate());
             }
 
             case LIKE: {
                 JsonNode s = eval(ops.get(0), row);
                 JsonNode p = eval(ops.get(1), row);
                 if (s == null || s.isNull() || p == null || p.isNull()) return null;
-                return F.booleanNode(likeMatch(s.asText(), p.asText()));
+                return F.booleanNode(likeMatch(JsonValues.asText(s), JsonValues.asText(p)));
             }
 
             case IN: {
@@ -234,10 +235,10 @@ public final class RexEvaluator {
     public static int compareValues(JsonNode a, JsonNode b) {
         if (a == null || a.isNull() || b == null || b.isNull()) return Integer.MIN_VALUE;
         if (a.isNumber() && b.isNumber()) {
-            return a.decimalValue().compareTo(b.decimalValue());
+            return JsonValues.decimalValue(a).compareTo(JsonValues.decimalValue(b));
         }
-        if (a.isBoolean() && b.isBoolean()) return Boolean.compare(a.booleanValue(), b.booleanValue());
-        return a.asText().compareTo(b.asText());
+        if (a.isBoolean() && b.isBoolean()) return Boolean.compare(JsonValues.booleanValue(a), JsonValues.booleanValue(b));
+        return JsonValues.asText(a).compareTo(JsonValues.asText(b));
     }
 
     private JsonNode arith(List<RexNode> ops, JsonNode row, String op) {
@@ -247,10 +248,13 @@ public final class RexEvaluator {
         // String CONCAT is an operator overload of PLUS in some dialects; Calcite emits ||
         // as a call to CONCAT — handled by function dispatch. Here we handle numeric only.
         if (!a.isNumber() || !b.isNumber()) {
-            throw new JvsSqlException("arithmetic on non-numeric values: " + a + " " + op + " " + b);
+            // JsonMappers, not JsonNode.toString() (Jackson 3 throws past 500 nesting levels there).
+            throw new JvsSqlException("arithmetic on non-numeric values: "
+                    + com.hitorro.util.json.JsonMappers.json().writeValueAsString(a) + " " + op + " "
+                    + com.hitorro.util.json.JsonMappers.json().writeValueAsString(b));
         }
-        BigDecimal x = a.decimalValue();
-        BigDecimal y = b.decimalValue();
+        BigDecimal x = JsonValues.decimalValue(a);
+        BigDecimal y = JsonValues.decimalValue(b);
         return switch (op) {
             case "+" -> F.numberNode(x.add(y));
             case "-" -> F.numberNode(x.subtract(y));
@@ -286,7 +290,7 @@ public final class RexEvaluator {
     private JsonNode columnByIndex(JsonNode row, int index) {
         if (!(row.isObject())) return null;
         int j = 0;
-        for (Iterator<String> it = row.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = row.propertyNames().iterator(); it.hasNext(); ) {
             String n = it.next();
             if (j++ == index) return row.get(n);
         }
@@ -320,12 +324,12 @@ public final class RexEvaluator {
     /** Unwrap a JsonNode into a Java value the UDF layer expects. */
     static Object unwrap(JsonNode n) {
         if (n == null || n.isNull()) return null;
-        if (n.isBoolean()) return n.booleanValue();
+        if (n.isBoolean()) return JsonValues.booleanValue(n);
         if (n.isNumber()) {
-            if (n.isIntegralNumber()) return n.longValue();
-            return n.doubleValue();
+            if (n.isIntegralNumber()) return JsonValues.longValue(n);
+            return JsonValues.doubleValue(n);
         }
-        if (n.isTextual()) return n.textValue();
+        if (n.isString()) return JsonValues.textValue(n);
         // For arrays/objects, hand the JsonNode over verbatim — UDFs that want raw JSON get it.
         return n;
     }

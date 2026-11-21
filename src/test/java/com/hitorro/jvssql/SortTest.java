@@ -26,7 +26,7 @@ class SortTest {
                 jvs("{\"filename\":\"b\", \"file_size\":200}")
             ), docsType()).build();
         var rows = run(engine.compile("SELECT filename FROM docs ORDER BY file_size"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("a", "b", "c");
     }
 
@@ -39,7 +39,7 @@ class SortTest {
                 jvs("{\"filename\":\"b\", \"file_size\":200}")
             ), docsType()).build();
         var rows = run(engine.compile("SELECT filename FROM docs ORDER BY file_size DESC"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("c", "b", "a");
     }
 
@@ -52,7 +52,7 @@ class SortTest {
                 jvs("{\"dept\":\"eng\", \"filename\":\"a\"}")
             ), docsType()).build();
         var rows = run(engine.compile("SELECT dept, filename FROM docs ORDER BY dept ASC, filename ASC"));
-        assertThat(rows).extracting(r -> r.get("dept").asText() + ":" + r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("dept").asString() + ":" + r.get("filename").asString())
                         .containsExactly("eng:a", "eng:b", "sales:a");
     }
 
@@ -67,7 +67,7 @@ class SortTest {
                 jvs("{\"filename\":\"e\", \"file_size\":5}")
             ), docsType()).build();
         var rows = run(engine.compile("SELECT filename FROM docs ORDER BY file_size DESC LIMIT 2 OFFSET 1"));
-        assertThat(rows).extracting(r -> r.get("filename").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString())
                         .containsExactly("d", "c");
     }
 
@@ -81,7 +81,7 @@ class SortTest {
             ), docsType()).build();
         var rows = run(engine.compile(
             "SELECT dept, SUM(file_size) AS total FROM docs GROUP BY dept ORDER BY total DESC"));
-        assertThat(rows).extracting(r -> r.get("dept").asText())
+        assertThat(rows).extracting(r -> r.get("dept").asString())
                         .containsExactly("c", "a", "b");
     }
 }

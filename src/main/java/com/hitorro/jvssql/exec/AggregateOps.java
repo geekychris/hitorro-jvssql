@@ -10,7 +10,7 @@ import java.math.BigDecimal;
  * COUNT, SUM, AVG, MIN, MAX. UDAFs go into the same registry.
  *
  * <p>Numeric aggregates use {@link BigDecimal} internally to avoid double-precision
- * drift; the final {@link com.fasterxml.jackson.databind.node.NumericNode} is emitted
+ * drift; the final {@link tools.jackson.databind.node.NumericNode} is emitted
  * with whatever precision the accumulator built up.</p>
  */
 public final class AggregateOps {

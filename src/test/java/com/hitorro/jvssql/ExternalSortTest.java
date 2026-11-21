@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.util.basefile.fs.file.FileFileSystem;
 import org.junit.jupiter.api.Test;

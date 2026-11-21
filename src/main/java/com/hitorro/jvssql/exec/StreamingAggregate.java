@@ -3,9 +3,9 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import org.apache.calcite.rel.core.AggregateCall;
 
 import java.util.ArrayList;
@@ -20,6 +20,7 @@ import java.util.NavigableMap;
 import java.util.NoSuchElementException;
 import java.util.TreeMap;
 import java.util.function.Function;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Streaming aggregate operator — maintains per-window state and emits closed
@@ -119,7 +120,7 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
             // Row with no window — skip. (Shouldn't happen if WIN_START is well-defined.)
             return;
         }
-        long ws = wsNode.asLong();
+        long ws = JsonValues.asLong(wsNode);
         maxObservedWindowStart = Math.max(maxObservedWindowStart, ws);
 
         Map<List<JsonNode>, GroupState> forThisWindow =
@@ -187,7 +188,7 @@ public final class StreamingAggregate implements Iterator<JsonNode> {
 
     private static JsonNode nthField(JsonNode row, int col) {
         int j = 0;
-        for (Iterator<String> it = row.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = row.propertyNames().iterator(); it.hasNext(); ) {
             String n = it.next();
             if (j++ == col) return row.get(n);
         }

@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql.examples;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.JvsSqlEngine;
@@ -13,6 +13,7 @@ import java.util.Iterator;
 import java.util.NoSuchElementException;
 
 import static com.hitorro.jvssql.examples.ExampleSupport.MAPPER;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Real incremental streaming aggregate: closed windows are emitted as soon as
@@ -62,7 +63,7 @@ public final class Example16_StreamingAggregate {
                 }
                 JVS row = events[i++];
                 System.out.println("  [source at t=" + (System.currentTimeMillis() % 100000) + "ms] emitting event_time="
-                        + row.getJsonNode().get("event_time").asLong());
+                        + JsonValues.asLong(row.getJsonNode().get("event_time")));
                 return row;
             }
         };

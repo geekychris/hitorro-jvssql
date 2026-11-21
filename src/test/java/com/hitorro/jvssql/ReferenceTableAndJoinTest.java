@@ -3,7 +3,8 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.util.basefile.fs.BaseFile;
 import com.hitorro.util.basefile.fs.file.FileFileSystem;
@@ -26,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ReferenceTableAndJoinTest {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     private static Type usersType() throws Exception {
         String typeJson = "{"
@@ -66,7 +67,7 @@ class ReferenceTableAndJoinTest {
           + "FROM docs d "
           + "JOIN users u ON d.author = u.email"));
         assertThat(rows).hasSize(2);
-        assertThat(rows).extracting(r -> r.get("filename").asText() + ":" + r.get("name").asText())
+        assertThat(rows).extracting(r -> r.get("filename").asString() + ":" + r.get("name").asString())
                         .containsExactlyInAnyOrder("a.pdf:Chris", "b.pdf:Alex");
     }
 
@@ -88,8 +89,8 @@ class ReferenceTableAndJoinTest {
           + "LEFT JOIN users u ON d.author = u.email"));
         assertThat(rows).hasSize(2);
         var byFile = rows.stream().collect(
-            java.util.stream.Collectors.toMap(r -> r.get("filename").asText(), r -> r.get("name")));
-        assertThat(byFile.get("a.pdf").asText()).isEqualTo("Chris");
+            java.util.stream.Collectors.toMap(r -> r.get("filename").asString(), r -> r.get("name")));
+        assertThat(byFile.get("a.pdf").asString()).isEqualTo("Chris");
         assertThat(byFile.get("b.pdf").isNull()).isTrue();
     }
 
@@ -115,8 +116,8 @@ class ReferenceTableAndJoinTest {
           + "RIGHT JOIN users u ON d.author = u.email"));
         assertThat(rows).hasSize(3);
         var byUserName = rows.stream().collect(
-            java.util.stream.Collectors.toMap(r -> r.get("name").asText(), r -> r.get("filename")));
-        assertThat(byUserName.get("Chris").asText()).isEqualTo("a.pdf");
+            java.util.stream.Collectors.toMap(r -> r.get("name").asString(), r -> r.get("filename")));
+        assertThat(byUserName.get("Chris").asString()).isEqualTo("a.pdf");
         assertThat(byUserName.get("Alex").isNull()).as("Alex has no matching doc").isTrue();
         assertThat(byUserName.get("Other").isNull()).as("Other has no matching doc").isTrue();
     }
@@ -177,10 +178,10 @@ class ReferenceTableAndJoinTest {
         // 2 chris matches + 1 unmatched Alex = 3 rows
         assertThat(rows).hasSize(3);
         long chrisRows = rows.stream()
-                .filter(r -> "Chris".equals(r.get("name").asText()))
+                .filter(r -> "Chris".equals(r.get("name").asString()))
                 .count();
         long alexRows = rows.stream()
-                .filter(r -> "Alex".equals(r.get("name").asText()))
+                .filter(r -> "Alex".equals(r.get("name").asString()))
                 .count();
         assertThat(chrisRows).isEqualTo(2);
         assertThat(alexRows).isEqualTo(1);
@@ -201,7 +202,7 @@ class ReferenceTableAndJoinTest {
         var rows = run(engine.compile(
             "SELECT d.filename, u.name FROM docs d JOIN users u ON d.author = u.email"));
         assertThat(rows).hasSize(1);
-        assertThat(rows.get(0).get("name").asText()).isEqualTo("B");
+        assertThat(rows.get(0).get("name").asString()).isEqualTo("B");
     }
 
     @Test
@@ -217,7 +218,7 @@ class ReferenceTableAndJoinTest {
             ), docsType())
             .build();
         var out1 = run(engine.compile("SELECT u.name FROM docs d JOIN users u ON d.author = u.email"));
-        assertThat(out1.get(0).get("name").asText()).isEqualTo("OldA");
+        assertThat(out1.get(0).get("name").asString()).isEqualTo("OldA");
 
         // Rewrite the reference file and refresh.
         Files.writeString(java.nio.file.Path.of(refFile.getAbsolutePath()),
@@ -233,7 +234,7 @@ class ReferenceTableAndJoinTest {
             ), docsType())
             .build();
         var out2 = run(engine2.compile("SELECT u.name FROM docs d JOIN users u ON d.author = u.email"));
-        assertThat(out2.get(0).get("name").asText()).isEqualTo("NewA");
+        assertThat(out2.get(0).get("name").asString()).isEqualTo("NewA");
         engine.close();
         engine2.close();
     }
@@ -283,9 +284,9 @@ class ReferenceTableAndJoinTest {
           + "ORDER BY o.o_ts, s.s_ts"));
 
         assertThat(rows).hasSize(2);
-        assertThat(rows.get(0).get("order_id").asText()).isEqualTo("o1");
+        assertThat(rows.get(0).get("order_id").asString()).isEqualTo("o1");
         assertThat(rows.get(0).get("s_ts").asLong()).isEqualTo(200);
-        assertThat(rows.get(1).get("order_id").asText()).isEqualTo("o2");
+        assertThat(rows.get(1).get("order_id").asString()).isEqualTo("o2");
         assertThat(rows.get(1).get("s_ts").asLong()).isEqualTo(1_000_500);
     }
 
@@ -309,6 +310,6 @@ class ReferenceTableAndJoinTest {
           + "FROM docs d JOIN users u ON d.author = u.email "
           + "WHERE u.tenure >= 5"));
         assertThat(rows).hasSize(1);
-        assertThat(rows.get(0).get("name").asText()).isEqualTo("Chris");
+        assertThat(rows.get(0).get("name").asString()).isEqualTo("Chris");
     }
 }

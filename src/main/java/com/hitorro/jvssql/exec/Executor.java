@@ -3,9 +3,9 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jvssql.JvsSqlException;
 import com.hitorro.jvssql.schema.JvsTable;
@@ -33,6 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Executes a Calcite {@link RelNode} plan against registered streams, producing an
@@ -122,20 +123,29 @@ public final class Executor {
         java.util.LinkedHashMap<String, JsonNode> seen = new java.util.LinkedHashMap<>();
         while (concat.hasNext()) {
             JsonNode row = concat.next();
-            seen.putIfAbsent(row.toString(), row);
+            seen.putIfAbsent(rowKey(row), row);
         }
         return seen.values().iterator();
+    }
+
+    /**
+     * The dedup key of a row for UNION / INTERSECT / EXCEPT: its compact JSON text. Written with
+     * {@code JsonMappers}, not {@code JsonNode.toString()}: on Jackson 3 the latter uses Jackson's
+     * internal serializer, which throws past 500 nesting levels (Jackson 2 and JsonMappers: 1000).
+     */
+    private static String rowKey(JsonNode row) {
+        return com.hitorro.util.json.JsonMappers.json().writeValueAsString(row);
     }
 
     private Iterator<JsonNode> buildSetOp(org.apache.calcite.rel.core.SetOp op, boolean isMinus) {
         // INTERSECT / EXCEPT (ALL variants dedup ratios differ; we implement set semantics).
         java.util.LinkedHashMap<String, JsonNode> left = new java.util.LinkedHashMap<>();
         Iterator<JsonNode> l = build(op.getInputs().get(0));
-        while (l.hasNext()) { JsonNode r = l.next(); left.putIfAbsent(r.toString(), r); }
+        while (l.hasNext()) { JsonNode r = l.next(); left.putIfAbsent(rowKey(r), r); }
         for (int i = 1; i < op.getInputs().size(); i++) {
             java.util.HashSet<String> rightKeys = new java.util.HashSet<>();
             Iterator<JsonNode> r = build(op.getInputs().get(i));
-            while (r.hasNext()) rightKeys.add(r.next().toString());
+            while (r.hasNext()) rightKeys.add(rowKey(r.next()));
             if (isMinus) {
                 left.keySet().removeAll(rightKeys);   // EXCEPT: drop rows also in right
             } else {
@@ -217,8 +227,8 @@ public final class Executor {
                 JsonNode v = eventTimePath.get(row, row.getJsonNode(),
                         com.hitorro.util.json.keys.propaccess.PAContext.AlwaysCreate);
                 if (v == null || v.isNull()) return 0L;
-                if (v.isNumber()) return v.asLong();
-                return java.time.Instant.parse(v.asText()).toEpochMilli();
+                if (v.isNumber()) return JsonValues.asLong(v);
+                return java.time.Instant.parse(JsonValues.asText(v)).toEpochMilli();
             } catch (Exception e) {
                 return 0L;
             }
@@ -379,7 +389,7 @@ public final class Executor {
 
     private static JsonNode nthField(JsonNode row, int col) {
         int j = 0;
-        for (Iterator<String> it = row.fieldNames(); it.hasNext(); ) {
+        for (Iterator<String> it = row.propertyNames().iterator(); it.hasNext(); ) {
             String n = it.next();
             if (j++ == col) return row.get(n);
         }
@@ -520,8 +530,8 @@ public final class Executor {
         if (aNull && bNull) return 0;
         if (aNull) return fc.nullDirection == RelFieldCollation.NullDirection.LAST ? 1 : -1;
         if (bNull) return fc.nullDirection == RelFieldCollation.NullDirection.LAST ? -1 : 1;
-        if (a.isNumber() && b.isNumber()) return a.decimalValue().compareTo(b.decimalValue());
-        return a.asText().compareTo(b.asText());
+        if (a.isNumber() && b.isNumber()) return JsonValues.decimalValue(a).compareTo(JsonValues.decimalValue(b));
+        return JsonValues.asText(a).compareTo(JsonValues.asText(b));
     }
 
     // -- hash join ------------------------------------------------------------

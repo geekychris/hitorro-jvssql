@@ -3,8 +3,9 @@
  */
 package com.hitorro.jvssql.bench;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.JvsSqlEngine;
@@ -30,7 +31,7 @@ import java.util.function.Supplier;
  */
 public final class BenchHarness {
 
-    private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final ObjectMapper MAPPER = JsonMappers.json();
 
     public static void main(String[] args) throws Exception {
         int N = Integer.getInteger("bench.rows", 100_000);

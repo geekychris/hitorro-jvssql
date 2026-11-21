@@ -3,8 +3,8 @@
  */
 package com.hitorro.jvssql;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 import com.hitorro.jvssql.exec.Executor;
 import com.hitorro.util.core.iterator.AbstractIterator;
 import com.hitorro.util.core.iterator.sinks.Sink;

@@ -3,7 +3,7 @@
  */
 package com.hitorro.jvssql.exec;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.util.json.keys.propaccess.PAContext;
 import com.hitorro.util.json.keys.propaccess.Propaccess;
@@ -11,6 +11,7 @@ import com.hitorro.util.json.keys.propaccess.Propaccess;
 import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
+import com.hitorro.util.json.JsonValues;
 
 /**
  * Name-to-implementation registry for scalar and aggregate functions.
@@ -149,9 +150,9 @@ public final class FunctionRegistry {
             if (mls == null || !mls.isArray()) return null;
             for (JsonNode item : mls) {
                 JsonNode l = item.get("lang");
-                if (l != null && lang.equalsIgnoreCase(l.asText())) {
+                if (l != null && lang.equalsIgnoreCase(JsonValues.asText(l))) {
                     JsonNode t = item.get("text");
-                    return t == null ? null : t.asText();
+                    return t == null ? null : JsonValues.asText(t);
                 }
             }
             return null;
@@ -193,7 +194,7 @@ public final class FunctionRegistry {
             Long size = numToLong(args[1]);
             if (ts == null || size == null || size <= 0) return null;
             long start = Math.floorDiv(ts, size) * size;
-            var node = com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode();
+            var node = tools.jackson.databind.node.JsonNodeFactory.instance.objectNode();
             node.put("start", start);
             node.put("end", start + size);
             return node;
@@ -207,7 +208,7 @@ public final class FunctionRegistry {
             java.util.List<String> out = new java.util.ArrayList<>();
             for (JsonNode item : mls) {
                 JsonNode l = item.get("lang");
-                if (l != null) out.add(l.asText());
+                if (l != null) out.add(JsonValues.asText(l));
             }
             return out;
         });

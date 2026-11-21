@@ -3,9 +3,10 @@
  */
 package com.hitorro.jvssql.examples;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.SerializationFeature;
+import com.hitorro.util.json.JsonMappers;
 import com.hitorro.jsontypesystem.JVS;
 import com.hitorro.jsontypesystem.Type;
 import com.hitorro.jvssql.PreparedQuery;
@@ -21,9 +22,10 @@ final class ExampleSupport {
 
     private ExampleSupport() {}
 
-    static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final ObjectMapper PRETTY = new ObjectMapper()
-            .enable(SerializationFeature.INDENT_OUTPUT);
+    static final ObjectMapper MAPPER = JsonMappers.json();
+    private static final ObjectMapper PRETTY = JsonMappers.builder()
+        .enable(SerializationFeature.INDENT_OUTPUT)
+        .build();
 
     /** Standard "docs" type used by most examples. */
     static Type docsType() throws Exception {
